@@ -144,6 +144,9 @@ jobs:
           
           # 修复 Docker unsafe procfs 错误
           CONFIG_USER_NS=y
+          #修复USB       
+          CONFIG_INPUT_MOUSE=y
+          CONFIG_USB_ARCH_HAS_HCD=y
           EOF
 
           # 合并到 defconfig（根据实际 defconfig 名称调整）
