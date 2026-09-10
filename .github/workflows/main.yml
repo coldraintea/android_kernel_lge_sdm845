@@ -147,8 +147,8 @@ jobs:
           cp buildlogs/build-parallel.log ../artifacts/logs/ 2>/dev/null || true
 
       - name: Prepare artifacts
-            working-directory: kernel
-            run: |
+        working-directory: kernel
+        run: |
               mkdir -p artifacts
               mkdir -p artifacts/logs
               cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
@@ -159,34 +159,34 @@ jobs:
               echo "✅ Artifacts prepared in kernel/artifacts/"
     
       - name: Upload kernel artifacts
-            uses: actions/upload-artifact@v4
-            with:
+        uses: actions/upload-artifact@v4
+        with:
               name: kernel-judyln-droidspaces
               path: kernel/artifacts/
               retention-days: 7
     
       - name: Upload build logs (always)
-            if: always()
-            uses: actions/upload-artifact@v4
-            with:
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
               name: kernel-make-log
               path: kernel/artifacts/logs/
               retention-days: 7
     
       - name: Create release package
-            if: github.event_name == 'push' || github.ref_type == 'tag'
-            working-directory: kernel/artifacts
-            run: |
+        if: github.event_name == 'push' || github.ref_type == 'tag'
+        working-directory: kernel/artifacts
+        run: |
               zip -r ../kernel-judyln-droidspaces.zip .
               echo "✅ Release package created"
     
       - name: Upload to Release
-            if: github.event_name == 'push' || github.ref_type == 'tag'
-            uses: softprops/action-gh-release@v1
-            with:
+        if: github.event_name == 'push' || github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v1
+        with:
               files: kernel/kernel-judyln-droidspaces.zip
               tag_name: ${{ github.ref_name }}
               draft: false
               prerelease: true
-            env:
+        env:
               GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
