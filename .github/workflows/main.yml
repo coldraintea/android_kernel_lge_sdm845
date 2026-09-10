@@ -85,68 +85,34 @@ jobs:
           cat droidspaces.cfg >> "$DEFCONFIG_PATH"
           echo "✅ Droidspaces config appended to $DEFCONFIG_PATH"
 
-      - name: Build kernel (single-thread, verbose) and capture logs
+
+      - name: Build kernel
         working-directory: kernel
-        env:
-          ARCH: arm64
-          CROSS_COMPILE: aarch64-linux-android-
-          CROSS_COMPILE_ARM32: arm-linux-androideabi-
-          CC: clang
-          CLANG_TRIPLE: aarch64-linux-android-
         run: |
-          set -euo pipefail
-          export CLANG_TRIPLE=aarch64-linux-android-
-          export CROSS_COMPILE=aarch64-linux-android- 
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          echo "=== ENV ==="
-          echo "ARCH=$ARCH"
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
-          echo "CC=$(command -v ${CC} || true)"
-          ${CC} --version || true
-          echo "${CROSS_COMPILE}gcc: $(command -v ${CROSS_COMPILE}gcc || true)"
-          ${CROSS_COMPILE}gcc --version || true
-
-          mkdir -p buildlogs
-
-          # 生成 config
-          echo "Generating defconfig and merging droidspaces.cfg"
-          make O=out ARCH=${ARCH} ${CONFIG_NAME} > build-config.log 2>&1 || (tail -n 200 build-config.log && true)
-          scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg >> build-config.log 2>&1 || (tail -n 200 build-config.log && true)
-          make O=out ARCH=${ARCH} olddefconfig >> build-config.log 2>&1 || (tail -n 200 build-config.log && true)
-
-          # 单线程详细编译以抓取第一个失败命令
-          echo "Starting single-threaded verbose build (V=1)"
-          set +e
-          make -j1 O=out ARCH=${ARCH} \
-            CROSS_COMPILE=${CROSS_COMPILE} \
-            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
-            CC=${CC} \
-            CLANG_TRIPLE=${CLANG_TRIPLE} \
-            Image.gz dtbo.img V=1 2>&1 | tee buildlogs/build-single.log
-          BUILD_EXIT=${PIPESTATUS[0]}
-          set -e
-
-          # 保存构建日志
-          cp buildlogs/build-single.log ../artifacts/logs/ 2>/dev/null || true
-          cp build-config.log ../artifacts/logs/ 2>/dev/null || true
-
-          # 检查日志中的错误关键词
-          if grep -E "fatal error:|error:|internal compiler error|segmentation fault|undefined reference" -n buildlogs/build-single.log | head -n 50; then
-            echo "Build failed during single-threaded step. See buildlogs/build-single.log"
-            tail -n 400 buildlogs/build-single.log || true
-            exit ${BUILD_EXIT}
+          DEFCONFIG="${{ github.event.inputs.config_name || 'lineageos_judyln_defconfig' }}"
+          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            DEFCONFIG="sdm845_defconfig"
           fi
 
-          echo "Single-threaded build succeeded; attempting parallel build"
-          make -j$(nproc) O=out ARCH=${ARCH} \
-            CROSS_COMPILE=${CROSS_COMPILE} \
-            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
-            CC=${CC} \
-            CLANG_TRIPLE=${CLANG_TRIPLE} \
-            Image.gz dtbo.img 2>&1 | tee buildlogs/build-parallel.log || true
+          make O=out ARCH=arm64 $DEFCONFIG
+          # 确保 Droidspaces 选项已启用（防止被覆盖）
+          scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg
+          make O=out ARCH=arm64 olddefconfig
 
-          cp buildlogs/build-parallel.log ../artifacts/logs/ 2>/dev/null || true
+          # 编译内核（使用所有 CPU 核心）
+          make -j$(nproc) O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            Image.gz dtbo.img
 
       - name: Prepare artifacts
         working-directory: kernel
@@ -192,3 +158,4 @@ jobs:
               prerelease: true
         env:
               GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              
