@@ -95,6 +95,8 @@ jobs:
           CLANG_TRIPLE: aarch64-linux-android-
         run: |
           set -euo pipefail
+          export CLANG_TRIPLE=aarch64-linux-android-
+          export CROSS_COMPILE=aarch64-linux-android- 
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
 
           echo "=== ENV ==="
