@@ -160,68 +160,110 @@ jobs:
           cat droidspaces.cfg >> "$DEFCONFIG"
           echo "✅ Droidspaces config appended to $DEFCONFIG"
 
-      - name: Build kernel
-        working-directory: kernel
-        run: |
-          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          DEFCONFIG="${{ github.event.inputs.config_name || 'lineageos_judyln_defconfig' }}"
-          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
-            DEFCONFIG="sdm845_defconfig"
-          fi
 
-          make O=out ARCH=arm64 $DEFCONFIG
-          # 确保 Droidspaces 选项已启用（防止被覆盖）
-          scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg
-          make O=out ARCH=arm64 olddefconfig
-
-          # 编译内核（使用所有 CPU 核心）
-          make -j$(nproc) O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            Image.gz dtbo.img
-
-      - name: Prepare artifacts
-        working-directory: kernel
-        run: |
-          mkdir -p artifacts
-          cp out/arch/arm64/boot/Image.gz artifacts/
-          cp out/arch/arm64/boot/dtbo.img artifacts/ || true
-          # 如果有 DTB 也打包
-          cp out/arch/arm64/boot/dts/qcom/*.dtb artifacts/ 2>/dev/null || true
-          # 保存内核配置
-          cp out/.config artifacts/config
-          # 生成 AnyKernel3 兼容的 zip（可选）
-          echo "✅ Artifacts prepared in kernel/artifacts/"
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-judyln-droidspaces
-          path: kernel/artifacts/
-          retention-days: 7
-
-      - name: Create release package
-        if: github.event_name == 'push' || github.ref_type == 'tag'
-        working-directory: kernel/artifacts
-        run: |
-          zip -r ../kernel-judyln-droidspaces.zip .
-          echo "✅ Release package created"
-
-      - name: Upload to Release
-        if: github.event_name == 'push' || github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: kernel/kernel-judyln-droidspaces.zip
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          - name: Build kernel
+          working-directory: kernel
+          run: |
+            set -euo pipefail
+            export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
+            export ARCH=arm64
+            export CROSS_COMPILE=aarch64-linux-android-
+            export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            export CC=clang
+            # 根据你的 clang 版本，尝试 android triple 或 gnue
+            export CLANG_TRIPLE=aarch64-linux-android-
+        
+            echo "=== ENV ==="
+            echo "PATH=$PATH"
+            echo "clang: $(command -v clang || true)"
+            clang --version || true
+            echo "${CROSS_COMPILE}gcc: $(command -v ${CROSS_COMPILE}gcc || true)"
+            ${CROSS_COMPILE}gcc --version || true
+        
+            echo "=== Toolchain listing ==="
+            ls -la "$GITHUB_WORKSPACE/toolchain" || true
+            ls -la "$GITHUB_WORKSPACE/toolchain/clang/bin" || true
+            ls -la "$GITHUB_WORKSPACE/toolchain/gcc/bin" || true
+        
+            DEFCONFIG="${{ github.event.inputs.config_name || 'lineageos_judyln_defconfig' }}"
+            if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+              DEFCONFIG="sdm845_defconfig"
+            fi
+        
+            # 生成 config（并记录日志）
+            make O=out ARCH=arm64 $DEFCONFIG > build-config.log 2>&1 || (tail -n 200 build-config.log && exit 1)
+            scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg >> build-config.log 2>&1 || (tail -n 200 build-config.log && exit 1)
+            make O=out ARCH=arm64 olddefconfig >> build-config.log 2>&1 || (tail -n 200 build-config.log && exit 1)
+        
+            # 单线程详细编译以抓取第一个失败命令
+            echo "Starting single-threaded verbose build (V=1)"
+            make -j1 O=out ARCH=arm64 \
+              CROSS_COMPILE=${CROSS_COMPILE} \
+              CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+              CC=${CC} \
+              CLANG_TRIPLE=${CLANG_TRIPLE} \
+              Image.gz dtbo.img V=1 > build-single.log 2>&1 || true
+        
+            # 检查错误关键字并在失败时保存日志
+            if grep -E "error:|fatal error:|internal compiler error|segmentation fault|[Ee]rror" -n build-single.log | head -n 20; then
+              echo "Build failed — showing tail for context:"
+              tail -n 400 build-single.log || true
+              mkdir -p ../artifacts/logs
+              cp build-single.log ../artifacts/logs/
+              cp build-config.log ../artifacts/logs/ || true
+              exit 1
+            fi
+        
+            # 单线程成功后再尝试并行（内存受限时可将 -j$(nproc) 改为 -j2/-j4）
+            echo "Single-threaded build OK — attempting parallel build"
+            make -j$(nproc) O=out ARCH=arm64 \
+              CROSS_COMPILE=${CROSS_COMPILE} \
+              CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+              CC=${CC} \
+              CLANG_TRIPLE=${CLANG_TRIPLE} \
+              Image.gz dtbo.img > build-parallel.log 2>&1 || (tail -n 200 build-parallel.log && exit 1)
+        
+            # 保存并上传日志以供后续分析（Prepare artifacts 步骤会复制 artifacts）
+            mkdir -p ../artifacts/logs
+            cp build-parallel.log ../artifacts/logs/ || true
+            cp build-single.log ../artifacts/logs/ || true
+            cp build-config.log ../artifacts/logs/ || true
+        
+              - name: Prepare artifacts
+                working-directory: kernel
+                run: |
+                  mkdir -p artifacts
+                  cp out/arch/arm64/boot/Image.gz artifacts/
+                  cp out/arch/arm64/boot/dtbo.img artifacts/ || true
+                  # 如果有 DTB 也打包
+                  cp out/arch/arm64/boot/dts/qcom/*.dtb artifacts/ 2>/dev/null || true
+                  # 保存内核配置
+                  cp out/.config artifacts/config
+                  # 生成 AnyKernel3 兼容的 zip（可选）
+                  echo "✅ Artifacts prepared in kernel/artifacts/"
+        
+              - name: Upload kernel artifacts
+                uses: actions/upload-artifact@v4
+                with:
+                  name: kernel-judyln-droidspaces
+                  path: kernel/artifacts/
+                  retention-days: 7
+        
+              - name: Create release package
+                if: github.event_name == 'push' || github.ref_type == 'tag'
+                working-directory: kernel/artifacts
+                run: |
+                  zip -r ../kernel-judyln-droidspaces.zip .
+                  echo "✅ Release package created"
+        
+              - name: Upload to Release
+                if: github.event_name == 'push' || github.ref_type == 'tag'
+                uses: softprops/action-gh-release@v1
+                with:
+                  files: kernel/kernel-judyln-droidspaces.zip
+                  tag_name: ${{ github.ref_name }}
+                  draft: false
+                  prerelease: true
+                env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
