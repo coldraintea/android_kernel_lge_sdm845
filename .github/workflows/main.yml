@@ -60,102 +60,106 @@ jobs:
           git clone --depth=1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
             toolchain/gcc32
+          chmod -R +x toolchain/gcc/bin toolchain/gcc32/bin
+          echo "Checking toolchain binaries:"
+          ls -la toolchain/gcc/bin/aarch64-linux-android-objdump
+          ls -la toolchain/gcc32/bin/arm-linux-androideabi-objdump
 
       - name: Apply cgroup prefix handling patch
         working-directory: kernel
         run: |
+          if [ -f 02.fix_restore_cgroup_file_prefix_handling.patch ]; then
             patch -p1 < 02.fix_restore_cgroup_file_prefix_handling.patch
-
-      - name: Apply Droidspaces kernel config
-        working-directory: kernel
-        run: |
-          # 合并到 defconfig根据实际 defconfig 名称调整
-          DEFCONFIG_NAME="${CONFIG_NAME}"
-          # 如果输入只是文件名例如 lineageos_judyln_defconfig尝试多个路径
-          if [ -f "arch/arm64/configs/${DEFCONFIG_NAME}" ]; then
-            DEFCONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}"
-          elif [ -f "arch/arm64/configs/${DEFCONFIG_NAME}_defconfig" ]; then
-            DEFCONFIG_PATH="arch/arm64/configs/${DEFCONFIG_NAME}_defconfig"
           else
-            # 尝试直接使用 sdm845_defconfig 作为回退
-            DEFCONFIG_PATH="arch/arm64/configs/sdm845_defconfig"
+            echo "Patch not found, skipping."
           fi
 
-          echo "Appending droidspaces.cfg to $DEFCONFIG_PATH"
-          cat droidspaces.cfg >> "$DEFCONFIG_PATH"
-          echo "✅ Droidspaces config appended to $DEFCONFIG_PATH"
-
+      - name: Fix VDSO dependency order in Makefile
+        working-directory: kernel
+        run: |
+          python3 - <<'EOF'
+          import re
+          path = 'arch/arm64/Makefile'
+          with open(path, 'r') as f:
+              content = f.read()
+          pattern = r'(prepare: vdso_prepare\nvdso_prepare: prepare0\n\t\$\(Q\)\$\(MAKE\) \$\(build\)=arch/arm64/kernel/vdso include/generated/vdso-offsets\.h\n)'
+          match = re.search(pattern, content)
+          if match:
+              block = match.group(1)
+              content = content.replace(block, '')
+              content = content.replace('PHONY += vdso_install', block + 'PHONY += vdso_install')
+              with open(path, 'w') as f:
+                  f.write(content)
+              print("VDSO dependency order fixed.")
+          else:
+              print("Pattern not found, maybe already fixed?")
+          EOF
 
       - name: Build kernel
         working-directory: kernel
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH"
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/gcc/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchain/gcc32/bin/arm-linux-androideabi-"
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          DEFCONFIG="${{ github.event.inputs.config_name || 'lineageos_judyln_defconfig' }}"
+          DEFCONFIG="${CONFIG_NAME}"
           if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            echo "Defconfig $DEFCONFIG not found, falling back to sdm845_defconfig"
             DEFCONFIG="sdm845_defconfig"
           fi
 
+          echo "Using defconfig: $DEFCONFIG"
           make O=out ARCH=arm64 $DEFCONFIG
-          # 确保 Droidspaces 选项已启用（防止被覆盖）
-          scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg
+          # 合并 Droidspaces 配置
+          if [ -f droidspaces.cfg ]; then
+            scripts/kconfig/merge_config.sh -O out out/.config droidspaces.cfg
+          else
+            echo "droidspaces.cfg not found, skipping merge"
+          fi
           make O=out ARCH=arm64 olddefconfig
 
-          # 编译内核（使用所有 CPU 核心）
+          # 编译内核
           make -j$(nproc) O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            Image.gz
+            Image.gz dtbo.img
 
       - name: Prepare artifacts
         working-directory: kernel
         run: |
-              mkdir -p artifacts
-              mkdir -p artifacts/logs
-              cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
-              cp out/arch/arm64/boot/dtbo.img artifacts/ 2>/dev/null || true
-              cp out/arch/arm64/boot/dts/qcom/*.dtb artifacts/ 2>/dev/null || true
-              cp out/.config artifacts/config 2>/dev/null || true
-              cp -r ../artifacts/logs/* artifacts/logs/ 2>/dev/null || true
-              echo "✅ Artifacts prepared in kernel/artifacts/"
-    
+          mkdir -p artifacts
+          cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
+          cp out/arch/arm64/boot/dtbo.img artifacts/ 2>/dev/null || true
+          cp out/arch/arm64/boot/dts/qcom/*.dtb artifacts/ 2>/dev/null || true
+          cp out/.config artifacts/config 2>/dev/null || true
+          echo "✅ Artifacts prepared in kernel/artifacts/"
+
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
         with:
-              name: kernel-judyln-droidspaces
-              path: kernel/artifacts/
-              retention-days: 7
-    
-      - name: Upload build logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-              name: kernel-make-log
-              path: kernel/artifacts/logs/
-              retention-days: 7
-    
+          name: kernel-judyln-droidspaces
+          path: kernel/artifacts/
+          retention-days: 7
+
       - name: Create release package
         if: github.event_name == 'push' || github.ref_type == 'tag'
         working-directory: kernel/artifacts
         run: |
-              zip -r ../kernel-judyln-droidspaces.zip .
-              echo "✅ Release package created"
-    
+          zip -r ../kernel-judyln-droidspaces.zip .
+          echo "✅ Release package created"
+
       - name: Upload to Release
         if: github.event_name == 'push' || github.ref_type == 'tag'
         uses: softprops/action-gh-release@v1
         with:
-              files: kernel/kernel-judyln-droidspaces.zip
-              tag_name: ${{ github.ref_name }}
-              draft: false
-              prerelease: true
+          files: kernel/kernel-judyln-droidspaces.zip
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: true
         env:
-              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
