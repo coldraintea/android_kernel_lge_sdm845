@@ -50,10 +50,8 @@ jobs:
           mkdir -p toolchain
           # 克隆官方 Clang 预编译仓库
           git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            toolchain/clang-repo
-          # 链接到预期的 clang 目录
-          ln -s toolchain/clang-repo/clang-r383902 toolchain/clang
+            https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone \
+            toolchain/clang -b 11
           chmod -R +x toolchain/clang/bin
           echo "=== Clang bin contents ==="
           ls toolchain/clang/bin | head
