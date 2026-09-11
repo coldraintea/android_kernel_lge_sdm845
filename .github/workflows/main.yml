@@ -48,21 +48,20 @@ jobs:
       - name: Setup toolchain (Clang 11.0.1)
         run: |
           mkdir -p toolchain
-          # 使用与 Android 15 内核匹配的 Clang 11.0.1
+          # 使用 LineageOS 预编译的 Clang 11.0.1 (r383902)
           git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            -b android-11.0.0_r1 \
-            toolchain/clang-repo
-          # 链接到预期目录
-          ln -s toolchain/clang-repo/clang-r383902 toolchain/clang
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r383902 \
+            toolchain/clang
           chmod -R +x toolchain/clang/bin
+          echo "=== Clang bin contents ==="
+          ls toolchain/clang/bin | head
 
       - name: Setup toolchain (GCC 4.9)
         run: |
-          git clone --depth=1 -b master \
+          git clone --depth=1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             toolchain/gcc
-          git clone --depth=1 -b master \
+          git clone --depth=1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
             toolchain/gcc32
           
