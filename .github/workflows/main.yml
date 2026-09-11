@@ -48,10 +48,12 @@ jobs:
       - name: Setup toolchain (Clang 11.0.1)
         run: |
           mkdir -p toolchain
-          # 使用 LineageOS 预编译的 Clang 11.0.1 (r383902)
+          # 克隆官方 Clang 预编译仓库
           git clone --depth=1 \
-            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r383902 \
-            toolchain/clang
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            toolchain/clang-repo
+          # 链接到预期的 clang 目录
+          ln -s toolchain/clang-repo/clang-r383902 toolchain/clang
           chmod -R +x toolchain/clang/bin
           echo "=== Clang bin contents ==="
           ls toolchain/clang/bin | head
@@ -146,15 +148,13 @@ jobs:
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            Image.gz dtbo.img
+            Image.gz
 
       - name: Prepare artifacts
         working-directory: kernel
         run: |
           mkdir -p artifacts
           cp out/arch/arm64/boot/Image.gz artifacts/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dtbo.img artifacts/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dts/qcom/*.dtb artifacts/ 2>/dev/null || true
           cp out/.config artifacts/config 2>/dev/null || true
           echo "✅ Artifacts prepared in kernel/artifacts/"
 
