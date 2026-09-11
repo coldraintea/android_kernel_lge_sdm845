@@ -48,7 +48,7 @@ jobs:
       - name: Setup toolchain (Clang 11.0.1)
         run: |
           mkdir -p toolchain
-          # 克隆官方 Clang 预编译仓库
+          # 克隆 Clang 独立预编译工具链 (GitLab)
           git clone --depth=1 \
             https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone \
             toolchain/clang -b 11
@@ -56,13 +56,14 @@ jobs:
           echo "=== Clang bin contents ==="
           ls toolchain/clang/bin | head
 
-      - name: Setup toolchain (GCC 4.9)
+      - name: Setup toolchain (GCC 4.9 from LineageOS)
         run: |
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+          # LineageOS 维护的 GCC 4.9 镜像仓库（AOSP 官方仓库已清空）
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             toolchain/gcc
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+          git clone --depth=1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
             toolchain/gcc32
           
           echo "=== Contents of toolchain/gcc ==="
