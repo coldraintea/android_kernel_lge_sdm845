@@ -54,16 +54,31 @@ jobs:
 
       - name: Setup toolchain (GCC)
         run: |
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            toolchain/gcc
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-            toolchain/gcc32
-          chmod -R +x toolchain/gcc/bin toolchain/gcc32/bin
-          echo "Checking toolchain binaries:"
-          ls -la toolchain/gcc/bin/aarch64-linux-android-objdump
-          ls -la toolchain/gcc32/bin/arm-linux-androideabi-objdump
+         git clone --depth=1 -b master \
+         https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+         toolchain/gcc
+         git clone --depth=1 -b master \
+         https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+         toolchain/gcc32
+
+         echo "=== Contents of toolchain/gcc ==="
+         ls -la toolchain/gcc
+         echo "=== Contents of toolchain/gcc32 ==="
+         ls -la toolchain/gcc32
+
+         if [ -d toolchain/gcc/bin ]; then
+          chmod -R +x toolchain/gcc/bin
+         else
+          echo "ERROR: toolchain/gcc/bin not found!"
+          exit 1
+         fi
+
+         if [ -d toolchain/gcc32/bin ]; then
+          chmod -R +x toolchain/gcc32/bin
+         else
+          echo "ERROR: toolchain/gcc32/bin not found!"
+          exit 1
+         fi
 
       - name: Apply cgroup prefix handling patch
         working-directory: kernel
