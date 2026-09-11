@@ -45,40 +45,45 @@ jobs:
             git make gcc gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             device-tree-compiler cpio lz4 gcc-arm-linux-gnueabi clang llvm
 
-      - name: Setup toolchain (Clang)
+      - name: Setup toolchain (Clang 11.0.1)
         run: |
           mkdir -p toolchain
+          # 使用与 Android 15 内核匹配的 Clang 11.0.1
           git clone --depth=1 \
-            https://gitlab.com/ThankYouMario/android_prebuilts_clang-standalone \
-            toolchain/clang -b 17
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            -b android-11.0.0_r1 \
+            toolchain/clang-repo
+          # 链接到预期目录
+          ln -s toolchain/clang-repo/clang-r383902 toolchain/clang
+          chmod -R +x toolchain/clang/bin
 
-      - name: Setup toolchain (GCC)
+      - name: Setup toolchain (GCC 4.9)
         run: |
-         git clone --depth=1 -b master \
-         https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-         toolchain/gcc
-         git clone --depth=1 -b master \
-         https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-         toolchain/gcc32
+          git clone --depth=1 -b master \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            toolchain/gcc
+          git clone --depth=1 -b master \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            toolchain/gcc32
+          
+          echo "=== Contents of toolchain/gcc ==="
+          ls -la toolchain/gcc
+          echo "=== Contents of toolchain/gcc32 ==="
+          ls -la toolchain/gcc32
 
-         echo "=== Contents of toolchain/gcc ==="
-         ls -la toolchain/gcc
-         echo "=== Contents of toolchain/gcc32 ==="
-         ls -la toolchain/gcc32
+          if [ -d toolchain/gcc/bin ]; then
+            chmod -R +x toolchain/gcc/bin
+          else
+            echo "ERROR: toolchain/gcc/bin not found!"
+            exit 1
+          fi
 
-         if [ -d toolchain/gcc/bin ]; then
-          chmod -R +x toolchain/gcc/bin
-         else
-          echo "ERROR: toolchain/gcc/bin not found!"
-          exit 1
-         fi
-
-         if [ -d toolchain/gcc32/bin ]; then
-          chmod -R +x toolchain/gcc32/bin
-         else
-          echo "ERROR: toolchain/gcc32/bin not found!"
-          exit 1
-         fi
+          if [ -d toolchain/gcc32/bin ]; then
+            chmod -R +x toolchain/gcc32/bin
+          else
+            echo "ERROR: toolchain/gcc32/bin not found!"
+            exit 1
+          fi
 
       - name: Apply cgroup prefix handling patch
         working-directory: kernel
