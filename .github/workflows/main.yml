@@ -139,23 +139,9 @@ jobs:
           echo "===== GCC32 ====="
           toolchain/gcc32/bin/arm-linux-androideabi-gcc --version
 
+     
       # ============================================================
       # 6. Download latest official LineageOS boot.img
-      #
-      # IMPORTANT:
-      # We do this BEFORE kernel compilation.
-      #
-      # The LineageOS API returns:
-      #
-      # builds[]
-      #   └── files[]
-      #         ├── filename
-      #         ├── url
-      #         ├── sha256
-      #         └── size
-      #
-      # We use the real URL returned by the API.
-      # No URL is constructed manually.
       # ============================================================
       - name: Download latest official LineageOS boot.img
         shell: bash
@@ -203,7 +189,6 @@ jobs:
               print("ERROR: LineageOS API returned no builds.")
               sys.exit(1)
 
-          # datetime is a Unix timestamp in the current API.
           builds.sort(
               key=lambda x: int(x.get("datetime", 0)),
               reverse=True
@@ -270,8 +255,25 @@ jobs:
               f.write(f"BOOT_SHA256={sha256}\n")
               f.write(f"BOOT_SIZE={size}\n")
               f.write(f"BOOT_FILENAME={filename}\n")
+
+          # Export values for the NEXT GitHub Actions steps.
+          with open("official/boot.env", "r", encoding="utf-8") as f:
+              env_data = f.read()
+
+          with open(
+              "official/boot.env.github",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write(env_data)
           PY
 
+          # Load variables into the CURRENT shell.
+          set -a
+          source official/boot.env
+          set +a
+
+          # Also make them available to all FOLLOWING steps.
           cat official/boot.env >> "$GITHUB_ENV"
 
           echo
