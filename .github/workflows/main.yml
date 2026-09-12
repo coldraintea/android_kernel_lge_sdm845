@@ -34,13 +34,17 @@ jobs:
       # 1. Maximize build space
       # ============================================================
       - name: Maximize build space
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /share
 
           df -h
+
 
       # ============================================================
       # 2. Checkout kernel
@@ -54,11 +58,15 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+
       # ============================================================
       # 3. Install dependencies
       # ============================================================
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -96,7 +104,10 @@ jobs:
       # ============================================================
       - name: Setup Clang 11
         working-directory: kernel
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p toolchain
 
           git clone \
@@ -115,7 +126,10 @@ jobs:
       # ============================================================
       - name: Setup GCC 4.9
         working-directory: kernel
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p toolchain
 
           git clone \
@@ -139,7 +153,7 @@ jobs:
           echo "===== GCC32 ====="
           toolchain/gcc32/bin/arm-linux-androideabi-gcc --version
 
-     
+
       # ============================================================
       # 6. Download latest official LineageOS boot.img
       # ============================================================
@@ -156,8 +170,8 @@ jobs:
           echo "=========================================="
           echo " LineageOS official boot.img"
           echo "=========================================="
-          echo
 
+          echo
           echo "[1/4] Fetch build list..."
 
           curl -L \
@@ -215,7 +229,7 @@ jobs:
                   break
 
           if boot is None:
-              print("ERROR: boot.img was not found in latest build.")
+              print("ERROR: boot.img was not found.")
               sys.exit(1)
 
           filename = boot.get("filename", "")
@@ -224,7 +238,7 @@ jobs:
           size = int(boot.get("size", 0))
 
           if filename != "boot.img":
-              print("ERROR: unexpected boot filename:", filename)
+              print("ERROR: unexpected filename:", filename)
               sys.exit(1)
 
           if not url:
@@ -232,7 +246,7 @@ jobs:
               sys.exit(1)
 
           if len(sha256) != 64:
-              print("ERROR: invalid SHA256 returned by API.")
+              print("ERROR: invalid SHA256.")
               sys.exit(1)
 
           if size <= 0:
@@ -255,25 +269,14 @@ jobs:
               f.write(f"BOOT_SHA256={sha256}\n")
               f.write(f"BOOT_SIZE={size}\n")
               f.write(f"BOOT_FILENAME={filename}\n")
-
-          # Export values for the NEXT GitHub Actions steps.
-          with open("official/boot.env", "r", encoding="utf-8") as f:
-              env_data = f.read()
-
-          with open(
-              "official/boot.env.github",
-              "w",
-              encoding="utf-8"
-          ) as f:
-              f.write(env_data)
           PY
 
-          # Load variables into the CURRENT shell.
+          # Make variables available in THIS shell.
           set -a
           source official/boot.env
           set +a
 
-          # Also make them available to all FOLLOWING steps.
+          # Make variables available to FOLLOWING steps.
           cat official/boot.env >> "$GITHUB_ENV"
 
           echo
@@ -321,34 +324,106 @@ jobs:
           fi
 
           echo
-          echo "=========================================="
-          echo "Official boot.img verified successfully"
-          echo "=========================================="
+          echo "Official boot.img verified successfully."
 
           ls -lh official/boot.img
           file official/boot.img
 
+
       # ============================================================
-      # 7. Apply cgroup patch
+      # 7. Prepare clean kernel source tree
+      #
+      # IMPORTANT:
+      # This kernel Makefile refuses O=out builds when the source
+      # tree already contains .config or include/config.
+      # ============================================================
+      - name: Clean kernel source tree for O=out
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== SOURCE TREE CLEANUP ====="
+
+          echo "Checking for tracked generated files..."
+
+          if git ls-files --error-unmatch .config >/dev/null 2>&1; then
+            echo "ERROR: .config is tracked in the repository."
+            exit 1
+          fi
+
+          if git ls-files --error-unmatch include/config >/dev/null 2>&1; then
+            echo "ERROR: include/config contains tracked files."
+            git ls-files include/config
+            exit 1
+          fi
+
+          echo "Removing old generated files..."
+
+          rm -f .config
+          rm -f .config.old
+          rm -f .version
+
+          rm -rf include/config
+          rm -rf include/generated
+          rm -rf arch/arm64/include/generated
+
+          rm -rf out
+
+          echo
+          echo "===== SOURCE TREE STATUS ====="
+
+          if [ -f .config ]; then
+            echo "ERROR: .config still exists."
+            exit 1
+          fi
+
+          if [ -d include/config ]; then
+            echo "ERROR: include/config still exists."
+            exit 1
+          fi
+
+          git status --short
+
+          echo
+          echo "Source tree is ready for O=out build."
+
+
+      # ============================================================
+      # 8. Apply cgroup patch
       # ============================================================
       - name: Apply cgroup patch
         working-directory: kernel
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [ -f "02.fix_restore_cgroup_file_prefix_handling.patch" ]; then
+
+            echo "===== CHECK CGROUP PATCH ====="
+
             git apply --check \
               02.fix_restore_cgroup_file_prefix_handling.patch
 
+            echo "===== APPLY CGROUP PATCH ====="
+
             git apply \
               02.fix_restore_cgroup_file_prefix_handling.patch
+
+          else
+            echo "cgroup patch not found."
           fi
 
+
       # ============================================================
-      # 8. VDSO32 dependency fix
+      # 9. VDSO32 dependency fix
       # ============================================================
       - name: Fix VDSO32 build dependency
         working-directory: kernel
         shell: bash
         run: |
+          set -euo pipefail
+
           python3 <<'PY'
           from pathlib import Path
 
@@ -358,9 +433,10 @@ jobs:
           original = text
 
           # ----------------------------------------------------------
-          # Add CROSS_COMPILE_COMPAT fallback
+          # CROSS_COMPILE_COMPAT fallback
           # ----------------------------------------------------------
           if "CROSS_COMPILE_COMPAT" not in text:
+
               marker = "ifeq ($(KBUILD_EXTMOD),)"
 
               if marker in text:
@@ -372,21 +448,23 @@ jobs:
                   )
 
           # ----------------------------------------------------------
-          # Make vdso_prepare generate vdso32-offsets.h
+          # Generate vdso32-offsets.h during prepare
           # ----------------------------------------------------------
           target = "include/generated/vdso32-offsets.h"
 
           if target not in text:
-              lines = text.splitlines()
 
+              lines = text.splitlines()
               insert_at = None
 
               for i, line in enumerate(lines):
+
                   if "include/generated/vdso-offsets.h" in line:
                       insert_at = i + 1
                       break
 
               if insert_at is not None:
+
                   block = [
                       "",
                       "ifdef CONFIG_COMPAT_VDSO",
@@ -398,14 +476,16 @@ jobs:
                   text = "\n".join(lines) + "\n"
 
           if text == original:
-              print("VDSO32 patch already present or no modification required.")
+              print("VDSO32 patch already present.")
           else:
               path.write_text(text)
               print("VDSO32 dependency fix applied.")
 
-          print("===== VDSO32 relevant lines =====")
+          print()
+          print("===== VDSO32 RELEVANT LINES =====")
 
           for i, line in enumerate(text.splitlines(), 1):
+
               if (
                   "CROSS_COMPILE_COMPAT" in line
                   or "vdso_prepare" in line
@@ -415,8 +495,9 @@ jobs:
                   print(f"{i}: {line}")
           PY
 
+
       # ============================================================
-      # 9. Build kernel
+      # 10. Build kernel
       # ============================================================
       - name: Build kernel
         working-directory: kernel
@@ -437,7 +518,9 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export LLVM=1
 
-          echo "===== TOOLCHAIN ====="
+          echo "=========================================="
+          echo " TOOLCHAIN"
+          echo "=========================================="
 
           which clang
           clang --version
@@ -446,12 +529,25 @@ jobs:
           echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
           echo "CROSS_COMPILE_COMPAT=$CROSS_COMPILE_COMPAT"
 
-          # ========================================================
-          # DEFCONFIG
-          # ========================================================
+          echo
+          echo "=========================================="
+          echo " SOURCE TREE CHECK"
+          echo "=========================================="
+
+          if [ -f .config ]; then
+            echo "ERROR: source .config exists."
+            exit 1
+          fi
+
+          if [ -d include/config ]; then
+            echo "ERROR: source include/config exists."
+            exit 1
+          fi
 
           echo
-          echo "===== DEFCONFIG ====="
+          echo "=========================================="
+          echo " DEFCONFIG"
+          echo "=========================================="
 
           make O=out \
             ARCH=arm64 \
@@ -463,26 +559,26 @@ jobs:
             LLVM=1 \
             "$CONFIG_NAME"
 
-          # ========================================================
-          # Droidspaces config
-          # ========================================================
-
           echo
-          echo "===== MERGE DROIDSPACES CONFIG ====="
+          echo "=========================================="
+          echo " MERGE DROIDSPACES CONFIG"
+          echo "=========================================="
 
           if [ -f droidspaces.cfg ]; then
+
             ./scripts/kconfig/merge_config.sh \
               -m \
               out/.config \
               droidspaces.cfg
+
+          else
+            echo "droidspaces.cfg not found."
           fi
 
-          # ========================================================
-          # olddefconfig
-          # ========================================================
-
           echo
-          echo "===== OLDDEFCONFIG ====="
+          echo "=========================================="
+          echo " OLDDEFCONFIG"
+          echo "=========================================="
 
           make O=out \
             ARCH=arm64 \
@@ -494,12 +590,27 @@ jobs:
             LLVM=1 \
             olddefconfig
 
-          # ========================================================
-          # prepare
-          # ========================================================
+          echo
+          echo "=========================================="
+          echo " VERIFY SOURCE TREE"
+          echo "=========================================="
+
+          if [ -f .config ]; then
+            echo "ERROR: source .config was generated."
+            exit 1
+          fi
+
+          if [ -d include/config ]; then
+            echo "ERROR: source include/config was generated."
+            exit 1
+          fi
+
+          echo "Source tree remains clean."
 
           echo
-          echo "===== PREPARE ====="
+          echo "=========================================="
+          echo " PREPARE"
+          echo "=========================================="
 
           make O=out \
             ARCH=arm64 \
@@ -511,32 +622,32 @@ jobs:
             LLVM=1 \
             prepare
 
-          # ========================================================
-          # Verify VDSO
-          # ========================================================
-
           echo
-          echo "===== VERIFY VDSO ====="
+          echo "=========================================="
+          echo " VERIFY VDSO"
+          echo "=========================================="
 
           test -f out/include/generated/vdso-offsets.h
 
           if grep -q '^CONFIG_COMPAT_VDSO=y' out/.config; then
+
             echo "CONFIG_COMPAT_VDSO=y"
 
             test -f \
               out/include/generated/vdso32-offsets.h
 
             echo "vdso32-offsets.h exists."
+
           else
+
             echo "CONFIG_COMPAT_VDSO is not enabled."
+
           fi
 
-          # ========================================================
-          # Build
-          # ========================================================
-
           echo
-          echo "===== BUILD IMAGE.GZ ====="
+          echo "=========================================="
+          echo " BUILD IMAGE.GZ"
+          echo "=========================================="
 
           make -j"$(nproc)" \
             O=out \
@@ -550,15 +661,23 @@ jobs:
             Image.gz
 
           echo
-          echo "===== KERNEL BUILD RESULT ====="
+          echo "=========================================="
+          echo " KERNEL BUILD RESULT"
+          echo "=========================================="
 
           test -s out/arch/arm64/boot/Image.gz
 
-          ls -lh out/arch/arm64/boot/Image.gz
-          file out/arch/arm64/boot/Image.gz
+          ls -lh \
+            out/arch/arm64/boot/Image.gz
+
+          file \
+            out/arch/arm64/boot/Image.gz
+
+
+      
 
       # ============================================================
-      # 10. Download magiskboot
+      # 11. Prepare magiskboot
       # ============================================================
       - name: Prepare magiskboot
         shell: bash
@@ -567,7 +686,7 @@ jobs:
 
           mkdir -p boot-tools
 
-          echo "Downloading latest Magisk package..."
+          echo "Downloading latest Magisk..."
 
           curl -L \
             --fail \
@@ -587,15 +706,18 @@ jobs:
             boot-tools/libmagiskboot.so \
             boot-tools/magiskboot
 
-          chmod +x boot-tools/magiskboot
+          chmod +x \
+            boot-tools/magiskboot
 
           echo
           echo "===== MAGISKBOOT ====="
 
-          ls -lh boot-tools/magiskboot
+          ls -lh \
+            boot-tools/magiskboot
+
 
       # ============================================================
-      # 11. Unpack official boot.img
+      # 12. Unpack official boot.img
       # ============================================================
       - name: Unpack official boot.img
         shell: bash
@@ -603,6 +725,7 @@ jobs:
           set -euo pipefail
 
           rm -rf boot-extracted
+
           mkdir -p boot-extracted
 
           cp \
@@ -611,7 +734,9 @@ jobs:
 
           cd boot-extracted
 
-          echo "===== UNPACK BOOT ====="
+          echo "=========================================="
+          echo " UNPACK OFFICIAL BOOT"
+          echo "=========================================="
 
           ../boot-tools/magiskboot \
             unpack \
@@ -627,45 +752,67 @@ jobs:
             | sort
 
           if [ ! -f kernel ]; then
+
             echo
-            echo "ERROR: magiskboot did not extract a kernel file."
+            echo "ERROR: magiskboot did not extract kernel."
+
+            find . \
+              -maxdepth 2 \
+              -type f \
+              -ls
+
             exit 1
           fi
 
           echo
-          echo "Original kernel:"
+          echo "===== ORIGINAL KERNEL ====="
+
           ls -lh kernel
           file kernel
 
+
       # ============================================================
-      # 12. Replace kernel with newly compiled Image.gz
+      # 13. Replace kernel with Image.gz
       # ============================================================
       - name: Replace boot kernel with Image.gz
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== NEW KERNEL ====="
+          echo "=========================================="
+          echo " NEW KERNEL"
+          echo "=========================================="
 
-          test -s kernel/out/arch/arm64/boot/Image.gz
+          test -s \
+            kernel/out/arch/arm64/boot/Image.gz
 
-          ls -lh kernel/out/arch/arm64/boot/Image.gz
-          file kernel/out/arch/arm64/boot/Image.gz
+          ls -lh \
+            kernel/out/arch/arm64/boot/Image.gz
+
+          file \
+            kernel/out/arch/arm64/boot/Image.gz
 
           echo
-          echo "===== REPLACE ====="
+          echo "=========================================="
+          echo " REPLACE KERNEL"
+          echo "=========================================="
 
           cp \
             kernel/out/arch/arm64/boot/Image.gz \
             boot-extracted/kernel
 
           echo
-          echo "New boot kernel:"
-          ls -lh boot-extracted/kernel
-          file boot-extracted/kernel
+          echo "===== NEW BOOT KERNEL ====="
+
+          ls -lh \
+            boot-extracted/kernel
+
+          file \
+            boot-extracted/kernel
+
 
       # ============================================================
-      # 13. Repack boot.img
+      # 14. Repack boot.img
       # ============================================================
       - name: Repack boot.img
         shell: bash
@@ -674,14 +821,20 @@ jobs:
 
           cd boot-extracted
 
-          echo "===== REPACK ====="
+          echo "=========================================="
+          echo " REPACK BOOT"
+          echo "=========================================="
 
           ../boot-tools/magiskboot \
             repack \
             official-boot.img
 
           if [ ! -f new-boot.img ]; then
+
             echo "ERROR: new-boot.img was not created."
+
+            ls -lah
+
             exit 1
           fi
 
@@ -696,23 +849,36 @@ jobs:
           echo
           echo "===== FINAL BOOT IMAGE ====="
 
-          ls -lh "${KERNEL_NAME}.img"
-          file "${KERNEL_NAME}.img"
+          ls -lh \
+            "${KERNEL_NAME}.img"
+
+          file \
+            "${KERNEL_NAME}.img"
+
 
       # ============================================================
-      # 14. Validate final boot.img
+      # 15. Validate final boot.img
       # ============================================================
       - name: Validate final boot.img
         shell: bash
         run: |
           set -euo pipefail
 
-          test -s "${KERNEL_NAME}.img"
+          test -s \
+            "${KERNEL_NAME}.img"
 
-          SIZE=$(stat -c%s "${KERNEL_NAME}.img")
+          SIZE=$(stat -c%s \
+            "${KERNEL_NAME}.img")
 
-          echo "Final boot.img:"
-          ls -lh "${KERNEL_NAME}.img"
+          echo "=========================================="
+          echo " FINAL BOOT IMAGE"
+          echo "=========================================="
+
+          ls -lh \
+            "${KERNEL_NAME}.img"
+
+          file \
+            "${KERNEL_NAME}.img"
 
           echo
           echo "Size:"
@@ -720,22 +886,25 @@ jobs:
 
           echo
           echo "SHA256:"
-          sha256sum "${KERNEL_NAME}.img"
+
+          sha256sum \
+            "${KERNEL_NAME}.img"
 
           echo
-          echo "===== OFFICIAL BASE ====="
+          echo "=========================================="
+          echo " OFFICIAL LINEAGEOS BASE"
+          echo "=========================================="
 
-          echo "LineageOS version : $LINEAGE_VERSION"
-          echo "LineageOS date    : $LINEAGE_DATE"
-          echo "LineageOS build   : $LINEAGE_TYPE"
-          echo "Official boot URL : $BOOT_URL"
-          echo "Official boot SHA : $BOOT_SHA256"
-          echo "Official boot size: $BOOT_SIZE"
+          echo "Version : $LINEAGE_VERSION"
+          echo "Date    : $LINEAGE_DATE"
+          echo "Type    : $LINEAGE_TYPE"
+          echo "URL     : $BOOT_URL"
+          echo "SHA256  : $BOOT_SHA256"
+          echo "Size    : $BOOT_SIZE"
+
+
       # ============================================================
-
-
-      # ============================================================
-      # 15. Create release package
+      # 16. Create release package
       # ============================================================
       - name: Create release package
         shell: bash
@@ -743,14 +912,26 @@ jobs:
           set -euo pipefail
 
           rm -rf release
+
           mkdir -p release
 
           echo "===== PREPARE RELEASE FILES ====="
 
-          cp "${KERNEL_NAME}.img" release/boot.img
-          cp kernel/out/arch/arm64/boot/Image.gz release/Image.gz
-          cp official/boot.img release/official-boot.img
-          cp official/lineage-builds.json release/lineage-builds.json
+          cp \
+            "${KERNEL_NAME}.img" \
+            release/boot.img
+
+          cp \
+            kernel/out/arch/arm64/boot/Image.gz \
+            release/Image.gz
+
+          cp \
+            official/boot.img \
+            release/official-boot.img
+
+          cp \
+            official/lineage-builds.json \
+            release/lineage-builds.json
 
           printf '%s\n' \
             'Kernel build for LG G7 ThinQ G710ULM / judyln' \
@@ -785,13 +966,13 @@ jobs:
             'Files:' \
             '' \
             'boot.img' \
-            'Repacked official LineageOS boot.img with the newly compiled Image.gz.' \
+            'Repacked official LineageOS boot.img with newly compiled Image.gz.' \
             '' \
             'Image.gz' \
             'Newly compiled kernel.' \
             '' \
             'official-boot.img' \
-            'Original official LineageOS boot.img used as the packaging base.' \
+            'Original official LineageOS boot.img used as packaging base.' \
             '' \
             'lineage-builds.json' \
             'Official LineageOS build API response.' \
@@ -801,10 +982,12 @@ jobs:
             'Flash at your own risk.' \
             > release/README.txt
 
+          echo
           echo "===== RELEASE DIRECTORY ====="
 
           ls -lah release
 
+          echo
           echo "===== CREATE ZIP ====="
 
           cd release
@@ -819,24 +1002,29 @@ jobs:
 
           cd ..
 
+          echo
           echo "===== PACKAGE RESULT ====="
 
-          test -s "${KERNEL_NAME}.zip"
-          test -s "${KERNEL_NAME}.img"
+          test -s \
+            "${KERNEL_NAME}.zip"
+
+          test -s \
+            "${KERNEL_NAME}.img"
 
           ls -lh \
             "${KERNEL_NAME}.zip" \
             "${KERNEL_NAME}.img"
 
+          echo
           echo "===== SHA256 ====="
 
           sha256sum \
             "${KERNEL_NAME}.zip" \
             "${KERNEL_NAME}.img"
 
-          echo "===== RELEASE PACKAGE CREATED ====="
+
       # ============================================================
-      # 16. Upload artifacts
+      # 17. Upload artifacts
       # ============================================================
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -851,9 +1039,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-          
+
       # ============================================================
-      # 17. GitHub Release
+      # 18. Create GitHub Release
       # ============================================================
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -882,29 +1070,28 @@ jobs:
             Build date:
             `${{ env.LINEAGE_DATE }}`
 
+            Build type:
+            `${{ env.LINEAGE_TYPE }}`
+
             Official boot.img:
             `${{ env.BOOT_URL }}`
 
             Official boot.img SHA256:
             `${{ env.BOOT_SHA256 }}`
 
-            Official boot.img size:
-            `${{ env.BOOT_SIZE }}` bytes
+            The official LineageOS boot.img was downloaded automatically
+            and used as the packaging base.
 
-            ### Packaging
+            The newly compiled Image.gz was inserted into the boot image.
 
-            The official LineageOS boot.img was downloaded and
-            SHA256-verified BEFORE kernel compilation.
+            ### Files
 
-            The newly compiled `Image.gz` was then inserted into
-            the verified official boot.img and repacked.
-
-            ### Release files
-
-            - `${{ env.KERNEL_NAME }}.img`
             - `${{ env.KERNEL_NAME }}.zip`
+            - `${{ env.KERNEL_NAME }}.img`
 
-            The ZIP also contains:
+            The `.img` file is the final repacked boot image.
+
+            The ZIP contains:
 
             - `boot.img`
             - `Image.gz`
@@ -914,12 +1101,16 @@ jobs:
 
             ### Warning
 
-            Experimental/test kernel.
+            Test/experimental kernel.
             Flash at your own risk.
+
           files: |
             ${{ env.KERNEL_NAME }}.zip
             ${{ env.KERNEL_NAME }}.img
+
           draft: false
           prerelease: false
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            
