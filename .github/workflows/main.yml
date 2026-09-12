@@ -1,65 +1,60 @@
-name: Build LG SDM845 Kernel
+name: Build Android Kernel
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_branch:
-        description: "Kernel branch"
-        required: false
-        default: "lineage-22.2"
-        type: string
-
-      defconfig:
-        description: "Kernel defconfig"
-        required: false
-        default: "lineageos_judyln_defconfig"
-        type: string
-
-      clean_build:
-        description: "Clean build"
-        required: false
-        default: true
-        type: boolean
-
   push:
+    branches:
+      - lineage-22.2
+  pull_request:
     branches:
       - lineage-22.2
 
 permissions:
   contents: read
 
+env:
+  ARCH: arm64
+
+  # Kernel source
+  KERNEL_DIR: ${{ github.workspace }}
+
+  # Output directory
+  OUT_DIR: ${{ github.workspace }}/out
+
+  # Toolchains
+  CLANG_DIR: ${{ github.workspace }}/toolchain/clang
+  GCC64_DIR: ${{ github.workspace }}/toolchain/gcc
+  GCC32_DIR: ${{ github.workspace }}/toolchain/gcc32
+
+  # Cross compiler
+  CROSS_COMPILE: ${{ github.workspace }}/toolchain/gcc/bin/aarch64-linux-android-
+  CROSS_COMPILE_ARM32: ${{ github.workspace }}/toolchain/gcc32/bin/arm-linux-androideabi-
+
+  CC: clang
+  CLANG_TRIPLE: aarch64-linux-gnu-
+
+  # Kernel config
+  DEFCONFIG: lineageos_judyln_defconfig
+
 jobs:
   build:
-    name: Build SDM845 Kernel
     runs-on: ubuntu-22.04
 
-    env:
-      ARCH: arm64
-      KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch || 'lineage-22.2' }}
-      DEFCONFIG: ${{ github.event.inputs.defconfig || 'lineageos_judyln_defconfig' }}
-
-      BUILD_DIR: ${{ github.workspace }}
-      OUT_DIR: ${{ github.workspace }}/out
-
-      CLANG_DIR: ${{ github.workspace }}/toolchain/clang
-      GCC64_DIR: ${{ github.workspace }}/toolchain/gcc
-      GCC32_DIR: ${{ github.workspace }}/toolchain/gcc32
-
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout kernel
-      # ------------------------------------------------------------
-      - name: Checkout kernel
+
+      # ---------------------------------------------------------
+      # Checkout kernel
+      # ---------------------------------------------------------
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          repository: coldraintea/android_kernel_lge_sdm845
-          ref: ${{ env.KERNEL_BRANCH }}
+          ref: lineage-22.2
           fetch-depth: 1
-          path: kernel
+          submodules: false
 
-      # ------------------------------------------------------------
-      # 2. Install build dependencies
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------
+      # Install dependencies
+      # ---------------------------------------------------------
       - name: Install dependencies
         run: |
           set -eux
@@ -67,61 +62,67 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
+            git \
+            make \
+            gcc \
+            g++ \
             bc \
             bison \
-            build-essential \
-            cpio \
             flex \
-            git \
+            libssl-dev \
             libelf-dev \
             libncurses-dev \
-            libssl-dev \
-            lz4 \
+            device-tree-compiler \
+            cpio \
             python3 \
-            python3-dev \
+            python3-pip \
+            python3-setuptools \
+            lz4 \
+            dwarves \
             rsync \
             unzip \
-            wget \
-            xz-utils \
             zip \
-            device-tree-compiler \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu \
-            binutils-arm-linux-gnueabi \
-            dwarves
+            wget \
+            curl \
+            ca-certificates \
+            file
 
-      # ------------------------------------------------------------
-      # 3. Prepare directories
-      # ------------------------------------------------------------
-      - name: Prepare directories
+      # ---------------------------------------------------------
+      # Prepare directories
+      # ---------------------------------------------------------
+      - name: Prepare build directories
         run: |
           set -eux
+
+          rm -rf "${CLANG_DIR}"
+          rm -rf "${GCC64_DIR}"
+          rm -rf "${GCC32_DIR}"
+          rm -rf "${OUT_DIR}"
 
           mkdir -p "${CLANG_DIR}"
           mkdir -p "${GCC64_DIR}"
           mkdir -p "${GCC32_DIR}"
           mkdir -p "${OUT_DIR}"
 
-      # ------------------------------------------------------------
-      # 4. Download Android Clang
+      # ---------------------------------------------------------
+      # Download Android Clang r383902
       #
-      # Android clang-r383902 is the Android 11-era Clang toolchain.
-      # The important part is that we explicitly expose the directory
-      # that actually contains bin/.
-      # ------------------------------------------------------------
-      - name: Download Android Clang
+      # Android 11 Clang
+      # clang version 11.0.1
+      # ---------------------------------------------------------
+      - name: Download Android Clang r383902
         run: |
           set -eux
 
           rm -rf clang-src
-          mkdir -p clang-src
 
           git clone \
             --depth=1 \
             --branch android-11.0.0_r1 \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang-src
+
+          echo "Checking Clang..."
 
           test -d clang-src/clang-r383902
           test -d clang-src/clang-r383902/bin
@@ -130,12 +131,23 @@ jobs:
           cp -a clang-src/clang-r383902/. "${CLANG_DIR}/"
 
           test -x "${CLANG_DIR}/bin/clang"
+          test -x "${CLANG_DIR}/bin/clang++"
+          test -x "${CLANG_DIR}/bin/ld.lld"
 
+          echo "Clang version:"
           "${CLANG_DIR}/bin/clang" --version
 
-      # ------------------------------------------------------------
-      # 5. Download Android GCC 4.9 AArch64
-      # ------------------------------------------------------------
+          echo "Clang location:"
+          ls -lah "${CLANG_DIR}/bin/clang"
+
+      # ---------------------------------------------------------
+      # Download AArch64 GCC 4.9
+      #
+      # IMPORTANT:
+      # Do NOT use the repository default branch.
+      # The default branch may no longer contain the old
+      # prebuilt GCC directory structure.
+      # ---------------------------------------------------------
       - name: Download AArch64 GCC 4.9
         run: |
           set -eux
@@ -144,19 +156,33 @@ jobs:
 
           git clone \
             --depth=1 \
+            --branch android-11.0.0_r1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             gcc64-src
 
+          echo "Checking AArch64 GCC..."
+
           test -d gcc64-src/bin
+          test -d gcc64-src/lib
+          test -d gcc64-src/libexec
+
           test -x gcc64-src/bin/aarch64-linux-android-gcc
+          test -x gcc64-src/bin/aarch64-linux-android-g++
+
+          rm -rf "${GCC64_DIR}"
+          mkdir -p "${GCC64_DIR}"
 
           cp -a gcc64-src/. "${GCC64_DIR}/"
 
+          test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
+          test -x "${GCC64_DIR}/bin/aarch64-linux-android-g++"
+
+          echo "AArch64 GCC version:"
           "${GCC64_DIR}/bin/aarch64-linux-android-gcc" --version
 
-      # ------------------------------------------------------------
-      # 6. Download Android GCC 4.9 ARM32
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------
+      # Download ARM32 GCC 4.9
+      # ---------------------------------------------------------
       - name: Download ARM32 GCC 4.9
         run: |
           set -eux
@@ -165,147 +191,144 @@ jobs:
 
           git clone \
             --depth=1 \
+            --branch android-11.0.0_r1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
             gcc32-src
 
+          echo "Checking ARM32 GCC..."
+
           test -d gcc32-src/bin
+          test -d gcc32-src/lib
+          test -d gcc32-src/libexec
+
           test -x gcc32-src/bin/arm-linux-androideabi-gcc
+          test -x gcc32-src/bin/arm-linux-androideabi-g++
+
+          rm -rf "${GCC32_DIR}"
+          mkdir -p "${GCC32_DIR}"
 
           cp -a gcc32-src/. "${GCC32_DIR}/"
 
+          test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
+          test -x "${GCC32_DIR}/bin/arm-linux-androideabi-g++"
+
+          echo "ARM32 GCC version:"
           "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" --version
 
-      # ------------------------------------------------------------
-      # 7. Configure PATH
-      # ------------------------------------------------------------
-      - name: Configure toolchain
+      # ---------------------------------------------------------
+      # Configure PATH
+      # ---------------------------------------------------------
+      - name: Configure toolchain PATH
         run: |
           set -eux
 
-          {
-            echo "${CLANG_DIR}/bin"
-            echo "${GCC64_DIR}/bin"
-            echo "${GCC32_DIR}/bin"
-          } >> "${GITHUB_PATH}"
+          echo "${CLANG_DIR}/bin" >> "${GITHUB_PATH}"
+          echo "${GCC64_DIR}/bin" >> "${GITHUB_PATH}"
+          echo "${GCC32_DIR}/bin" >> "${GITHUB_PATH}"
 
-          echo "PATH=${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}" >> "${GITHUB_ENV}"
+          echo "PATH entries:"
+          echo "${CLANG_DIR}/bin"
+          echo "${GCC64_DIR}/bin"
+          echo "${GCC32_DIR}/bin"
 
-          echo "ARCH=${ARCH}" >> "${GITHUB_ENV}"
-
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> "${GITHUB_ENV}"
-          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> "${GITHUB_ENV}"
-
-          echo "CC=clang" >> "${GITHUB_ENV}"
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> "${GITHUB_ENV}"
-
-          echo "LLVM=1" >> "${GITHUB_ENV}"
-          echo "LLVM_IAS=1" >> "${GITHUB_ENV}"
-
-      # ------------------------------------------------------------
-      # 8. Verify toolchain
-      # ------------------------------------------------------------
-      - name: Verify toolchain
-        working-directory: kernel
+      # ---------------------------------------------------------
+      # Verify complete toolchain
+      # ---------------------------------------------------------
+      - name: Verify toolchains
         run: |
           set -eux
 
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
+
           echo "========================================"
-          echo "Toolchain"
+          echo "Clang"
           echo "========================================"
 
-          which clang
+          command -v clang
           clang --version
 
-          which ld.lld
+          echo "========================================"
+          echo "LLD"
+          echo "========================================"
+
+          command -v ld.lld
           ld.lld --version
 
-          which aarch64-linux-android-gcc
+          echo "========================================"
+          echo "AArch64 GCC"
+          echo "========================================"
+
+          command -v aarch64-linux-android-gcc
           aarch64-linux-android-gcc --version
 
-          which arm-linux-androideabi-gcc
+          echo "========================================"
+          echo "ARM32 GCC"
+          echo "========================================"
+
+          command -v arm-linux-androideabi-gcc
           arm-linux-androideabi-gcc --version
 
-          echo
           echo "========================================"
-          echo "Important files"
+          echo "Toolchain files"
           echo "========================================"
 
-          test -x "${CLANG_DIR}/bin/clang"
-          test -x "${CLANG_DIR}/bin/ld.lld"
+          ls -lah "${CLANG_DIR}/bin/clang"
+          ls -lah "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
+          ls -lah "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
 
-          test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
-          test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
-
-      # ------------------------------------------------------------
-      # 9. Check kernel tree
-      # ------------------------------------------------------------
-      - name: Check kernel tree
-        working-directory: kernel
+      # ---------------------------------------------------------
+      # Check kernel source
+      # ---------------------------------------------------------
+      - name: Check kernel source
         run: |
           set -eux
 
-          echo "Kernel branch:"
-          git branch --show-current || true
+          echo "Kernel directory:"
+          pwd
 
-          echo
-          echo "Kernel commit:"
-          git log -1 --oneline
+          echo "Kernel files:"
+          ls -lah
 
-          echo
-          echo "Kernel version:"
-          make kernelversion
+          echo "Makefile:"
+          test -f Makefile
 
-          echo
-          echo "Available SDM845 defconfigs:"
-          find arch/arm64/configs -maxdepth 1 -type f \
-            \( -name '*sdm845*' -o -name '*judyln*' \) \
-            -print | sort
+          echo "Kconfig:"
+          test -f Kconfig
 
-          echo
-          echo "Requested defconfig:"
+          echo "Defconfig:"
           test -f "arch/arm64/configs/${DEFCONFIG}"
 
-      # ------------------------------------------------------------
-      # 10. Clean output directory
-      # ------------------------------------------------------------
-      - name: Clean output
-        if: ${{ github.event.inputs.clean_build != 'false' }}
-        working-directory: kernel
-        run: |
-          set -eux
-
-          rm -rf "${OUT_DIR}"
-          mkdir -p "${OUT_DIR}"
-
-      # ------------------------------------------------------------
-      # 11. Generate base defconfig
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------
+      # Generate base defconfig
+      # ---------------------------------------------------------
       - name: Generate defconfig
-        working-directory: kernel
         run: |
           set -eux
 
-          mkdir -p "${OUT_DIR}"
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
 
           make \
             O="${OUT_DIR}" \
-            ARCH=arm64 \
+            ARCH="${ARCH}" \
             "${DEFCONFIG}"
 
+          echo "Generated config:"
           test -f "${OUT_DIR}/.config"
 
-          echo
-          echo "Base configuration generated."
+          echo "CONFIG size:"
+          wc -l "${OUT_DIR}/.config"
 
-      # ------------------------------------------------------------
-      # 12. Merge droidspaces.cfg if present
-      # ------------------------------------------------------------
-      - name: Merge Droidspaces configuration
-        working-directory: kernel
+      # ---------------------------------------------------------
+      # Merge DroidSpaces configuration
+      # ---------------------------------------------------------
+      - name: Merge droidspaces.cfg
         run: |
           set -eux
 
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
+
           if [ -f droidspaces.cfg ]; then
+
             echo "Found droidspaces.cfg"
 
             scripts/kconfig/merge_config.sh \
@@ -315,19 +338,23 @@ jobs:
 
             make \
               O="${OUT_DIR}" \
-              ARCH=arm64 \
+              ARCH="${ARCH}" \
               olddefconfig
+
           else
-            echo "droidspaces.cfg not found; skipping."
+
+            echo "droidspaces.cfg not found."
+            echo "Skipping config merge."
+
           fi
 
+          echo "Final kernel config:"
           test -f "${OUT_DIR}/.config"
 
-      # ------------------------------------------------------------
-      # 13. Show final important kernel config
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------
+      # Show important configuration
+      # ---------------------------------------------------------
       - name: Show kernel configuration
-        working-directory: kernel
         run: |
           set -eux
 
@@ -336,157 +363,186 @@ jobs:
           echo "========================================"
 
           grep -E \
-            '^(CONFIG_ARM64=|CONFIG_ARCH_QCOM=|CONFIG_ARCH_MSM|CONFIG_BUILD_ARM64_DT_OVERLAY=|CONFIG_OF=|CONFIG_MODULES=)' \
+            '^(CONFIG_ARM64|CONFIG_MODULES|CONFIG_KALLSYMS|CONFIG_LTO|CONFIG_CC_IS_CLANG|CONFIG_LD_IS_LLD|CONFIG_IKCONFIG)' \
             "${OUT_DIR}/.config" || true
 
-          echo
-          echo "Clang:"
-          clang --version | head -n 3
-
-          echo
-          echo "Defconfig:"
-          echo "${DEFCONFIG}"
-
-      # ------------------------------------------------------------
-      # 14. Build kernel Image.gz
+      # ---------------------------------------------------------
+      # Build kernel Image.gz
       #
-      # Build Image.gz first.
-      # Do NOT put dtbo.img in the first build target because it can
-      # hide the actual kernel compilation error.
-      # ------------------------------------------------------------
+      # LLVM_IAS is intentionally NOT enabled here.
+      # First get a clean baseline build working.
+      # ---------------------------------------------------------
       - name: Build Image.gz
-        working-directory: kernel
         run: |
           set -eux
+
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
+
+          export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CROSS_COMPILE="${GCC64_DIR}/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="${GCC32_DIR}/bin/arm-linux-androideabi-"
 
           make \
             -j"$(nproc)" \
             O="${OUT_DIR}" \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            CROSS_COMPILE="${GCC64_DIR}/bin/aarch64-linux-android-" \
+            CROSS_COMPILE_ARM32="${GCC32_DIR}/bin/arm-linux-androideabi-" \
             Image.gz
 
-      # ------------------------------------------------------------
-      # 15. Build DTBs / DTBO
-      # ------------------------------------------------------------
-      - name: Build device trees
-        working-directory: kernel
+          test -f "${OUT_DIR}/arch/arm64/boot/Image.gz"
+
+          echo "Image.gz successfully built."
+
+          ls -lh \
+            "${OUT_DIR}/arch/arm64/boot/Image.gz"
+
+      # ---------------------------------------------------------
+      # Build DTBs
+      # ---------------------------------------------------------
+      - name: Build DTBs
         run: |
           set -eux
+
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
+
+          export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CROSS_COMPILE="${GCC64_DIR}/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="${GCC32_DIR}/bin/arm-linux-androideabi-"
 
           make \
             -j"$(nproc)" \
             O="${OUT_DIR}" \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            CROSS_COMPILE="${GCC64_DIR}/bin/aarch64-linux-android-" \
+            CROSS_COMPILE_ARM32="${GCC32_DIR}/bin/arm-linux-androideabi-" \
             dtbs
 
-      # ------------------------------------------------------------
-      # 16. Build dtbo.img when the kernel tree supports it
-      # ------------------------------------------------------------
-      - name: Build dtbo.img
-        working-directory: kernel
-        run: |
-          set -eux
+          echo "DTB files:"
 
-          BOOT_DTS_DIR="${OUT_DIR}/arch/arm64/boot/dts"
-
-          echo "Searching for DTBO files..."
-
-          find "${BOOT_DTS_DIR}" \
+          find "${OUT_DIR}/arch/arm64/boot/dts" \
             -type f \
-            \( -name "*.dtbo" -o -name "*.dtbo.img" \) \
+            \( -name "*.dtb" -o -name "*.dtbo" \) \
             -print || true
 
-          DTBO_FILES=$(find "${BOOT_DTS_DIR}" -type f -name "*.dtbo" -print)
-
-          if [ -n "${DTBO_FILES}" ]; then
-            echo "Creating dtbo.img"
-
-            if command -v mkdtimg >/dev/null 2>&1; then
-              mkdtimg create \
-                "${OUT_DIR}/dtbo.img" \
-                --page_size=4096 \
-                ${DTBO_FILES}
-            else
-              echo "mkdtimg is not installed."
-              echo "Skipping dtbo.img generation."
-            fi
-          else
-            echo "No .dtbo files generated."
-            echo "Skipping dtbo.img."
-          fi
-
-      # ------------------------------------------------------------
-      # 17. Collect build artifacts
-      # ------------------------------------------------------------
-      - name: Prepare artifacts
-        if: always()
-        working-directory: kernel
+      # ---------------------------------------------------------
+      # Build DTBO image
+      # ---------------------------------------------------------
+      - name: Build DTBO image
         run: |
           set -eux
 
-          mkdir -p "${GITHUB_WORKSPACE}/artifacts"
+          export PATH="${CLANG_DIR}/bin:${GCC64_DIR}/bin:${GCC32_DIR}/bin:${PATH}"
 
+          if grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' "${OUT_DIR}/.config"; then
+
+            echo "DT overlay support enabled."
+
+            make \
+              -j"$(nproc)" \
+              O="${OUT_DIR}" \
+              ARCH=arm64 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE="${GCC64_DIR}/bin/aarch64-linux-android-" \
+              CROSS_COMPILE_ARM32="${GCC32_DIR}/bin/arm-linux-androideabi-" \
+              dtbo.img
+
+          else
+
+            echo "CONFIG_BUILD_ARM64_DT_OVERLAY is not enabled."
+            echo "Skipping dtbo.img."
+
+          fi
+
+          if [ -f "${OUT_DIR}/arch/arm64/boot/dtbo.img" ]; then
+            ls -lh "${OUT_DIR}/arch/arm64/boot/dtbo.img"
+          else
+            echo "No dtbo.img generated."
+          fi
+
+      # ---------------------------------------------------------
+      # Collect build artifacts
+      # ---------------------------------------------------------
+      - name: Prepare artifacts
+        if: success()
+        run: |
+          set -eux
+
+          rm -rf release
+          mkdir -p release
+
+          # Kernel
           if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz" ]; then
             cp \
               "${OUT_DIR}/arch/arm64/boot/Image.gz" \
-              "${GITHUB_WORKSPACE}/artifacts/"
+              release/Image.gz
           fi
 
-          if [ -f "${OUT_DIR}/dtbo.img" ]; then
+          # Raw Image
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
             cp \
-              "${OUT_DIR}/dtbo.img" \
-              "${GITHUB_WORKSPACE}/artifacts/"
+              "${OUT_DIR}/arch/arm64/boot/Image" \
+              release/Image
           fi
 
-          if [ -f "${OUT_DIR}/.config" ]; then
+          # DTBO
+          if [ -f "${OUT_DIR}/arch/arm64/boot/dtbo.img" ]; then
             cp \
-              "${OUT_DIR}/.config" \
-              "${GITHUB_WORKSPACE}/artifacts/kernel.config"
+              "${OUT_DIR}/arch/arm64/boot/dtbo.img" \
+              release/dtbo.img
           fi
 
-          if [ -f "${OUT_DIR}/System.map" ]; then
-            cp \
-              "${OUT_DIR}/System.map" \
-              "${GITHUB_WORKSPACE}/artifacts/"
-          fi
+          # DTBs
+          mkdir -p release/dtb
 
-          if [ -f "${OUT_DIR}/vmlinux" ]; then
-            cp \
-              "${OUT_DIR}/vmlinux" \
-              "${GITHUB_WORKSPACE}/artifacts/"
-          fi
-
-          echo
-          echo "========================================"
-          echo "Artifacts"
-          echo "========================================"
-
-          find "${GITHUB_WORKSPACE}/artifacts" \
-            -maxdepth 1 \
+          find "${OUT_DIR}/arch/arm64/boot/dts" \
             -type f \
-            -printf '%f %s bytes\n' \
-            | sort
+            -name "*.dtb" \
+            -exec cp {} release/dtb/ \; || true
 
-      # ------------------------------------------------------------
-      # 18. Upload artifacts
-      # ------------------------------------------------------------
+          echo "========================================"
+          echo "Release files"
+          echo "========================================"
+
+          find release \
+            -type f \
+            -exec ls -lh {} \;
+
+      # ---------------------------------------------------------
+      # Upload kernel artifacts
+      # ---------------------------------------------------------
       - name: Upload kernel artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: sdm845-kernel-${{ github.run_number }}
-          path: artifacts/
-          if-no-files-found: warn
+          name: kernel-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
           retention-days: 14
+
+      # ---------------------------------------------------------
+      # Upload full build output when compilation fails
+      # ---------------------------------------------------------
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-failure-${{ github.sha }}
+          path: |
+            out/.config
+            out/.config.old
+            out/include/config/
+            out/arch/arm64/boot/
+          if-no-files-found: ignore
+          retention-days: 7
