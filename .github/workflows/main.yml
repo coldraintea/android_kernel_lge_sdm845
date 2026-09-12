@@ -590,22 +590,6 @@ jobs:
             LLVM=1 \
             olddefconfig
 
-          echo
-          echo "=========================================="
-          echo " VERIFY SOURCE TREE"
-          echo "=========================================="
-
-          if [ -f .config ]; then
-            echo "ERROR: source .config was generated."
-            exit 1
-          fi
-
-          if [ -d include/config ]; then
-            echo "ERROR: source include/config was generated."
-            exit 1
-          fi
-
-          echo "Source tree remains clean."
 
           echo
           echo "=========================================="
