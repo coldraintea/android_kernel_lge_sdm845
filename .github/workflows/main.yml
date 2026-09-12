@@ -729,6 +729,8 @@ jobs:
           echo "Official boot URL : $BOOT_URL"
           echo "Official boot SHA : $BOOT_SHA256"
           echo "Official boot size: $BOOT_SIZE"
+      # ============================================================
+
 
       # ============================================================
       # 15. Create release package
@@ -741,76 +743,67 @@ jobs:
           rm -rf release
           mkdir -p release
 
-          # Final modified boot image
-          cp \
-            "${KERNEL_NAME}.img" \
-            release/boot.img
+          echo "===== PREPARE RELEASE FILES ====="
 
-          # Newly compiled kernel
-          cp \
-            kernel/out/arch/arm64/boot/Image.gz \
-            release/Image.gz
+          cp "${KERNEL_NAME}.img" release/boot.img
+          cp kernel/out/arch/arm64/boot/Image.gz release/Image.gz
+          cp official/boot.img release/official-boot.img
+          cp official/lineage-builds.json release/lineage-builds.json
 
-          # Original official boot image
-          cp \
-            official/boot.img \
-            release/official-boot.img
+          printf '%s\n' \
+            'Kernel build for LG G7 ThinQ G710ULM / judyln' \
+            '' \
+            'Kernel repository:' \
+            'https://github.com/coldraintea/android_kernel_lge_sdm845' \
+            '' \
+            'Kernel branch:' \
+            "${KERNEL_BRANCH}" \
+            '' \
+            'Defconfig:' \
+            "${CONFIG_NAME}" \
+            '' \
+            'LineageOS version:' \
+            "${LINEAGE_VERSION}" \
+            '' \
+            'LineageOS build date:' \
+            "${LINEAGE_DATE}" \
+            '' \
+            'LineageOS build type:' \
+            "${LINEAGE_TYPE}" \
+            '' \
+            'Official LineageOS boot.img:' \
+            "${BOOT_URL}" \
+            '' \
+            'Official boot.img SHA256:' \
+            "${BOOT_SHA256}" \
+            '' \
+            'Official boot.img size:' \
+            "${BOOT_SIZE}" \
+            '' \
+            'Files:' \
+            '' \
+            'boot.img' \
+            'Repacked official LineageOS boot.img with the newly compiled Image.gz.' \
+            '' \
+            'Image.gz' \
+            'Newly compiled kernel.' \
+            '' \
+            'official-boot.img' \
+            'Original official LineageOS boot.img used as the packaging base.' \
+            '' \
+            'lineage-builds.json' \
+            'Official LineageOS build API response.' \
+            '' \
+            'WARNING:' \
+            'This kernel is for testing purposes.' \
+            'Flash at your own risk.' \
+            > release/README.txt
 
-          # Build API response
-          cp \
-            official/lineage-builds.json \
-            release/lineage-builds.json
-
-          cat > release/README.txt <<EOF
-Kernel build for LG G7 ThinQ G710ULM / judyln
-
-Kernel repository:
-https://github.com/coldraintea/android_kernel_lge_sdm845
-
-Kernel branch:
-${KERNEL_BRANCH}
-
-Defconfig:
-${CONFIG_NAME}
-
-LineageOS version:
-${LINEAGE_VERSION}
-
-LineageOS build date:
-${LINEAGE_DATE}
-
-Official LineageOS boot.img:
-${BOOT_URL}
-
-Official boot.img SHA256:
-${BOOT_SHA256}
-
-Official boot.img size:
-${BOOT_SIZE}
-
-Files:
-
-boot.img
-  Repacked official LineageOS boot.img
-  with the newly compiled Image.gz.
-
-Image.gz
-  Newly compiled kernel.
-
-official-boot.img
-  Original official LineageOS boot.img.
-
-lineage-builds.json
-  Official LineageOS build API response.
-
-WARNING:
-This kernel is for testing.
-Flash at your own risk.
-EOF
-
-          echo "===== RELEASE FILES ====="
+          echo "===== RELEASE DIRECTORY ====="
 
           ls -lah release
+
+          echo "===== CREATE ZIP ====="
 
           cd release
 
@@ -824,17 +817,22 @@ EOF
 
           cd ..
 
-          echo
-          echo "===== PACKAGE ====="
+          echo "===== PACKAGE RESULT ====="
 
-          ls -lh "${KERNEL_NAME}.zip"
+          test -s "${KERNEL_NAME}.zip"
+          test -s "${KERNEL_NAME}.img"
 
-          echo
-          echo "SHA256:"
+          ls -lh \
+            "${KERNEL_NAME}.zip" \
+            "${KERNEL_NAME}.img"
+
+          echo "===== SHA256 ====="
+
           sha256sum \
             "${KERNEL_NAME}.zip" \
             "${KERNEL_NAME}.img"
 
+          echo "===== RELEASE PACKAGE CREATED ====="
       # ============================================================
       # 16. Upload artifacts
       # ============================================================
