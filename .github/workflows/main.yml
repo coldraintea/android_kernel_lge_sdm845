@@ -590,6 +590,56 @@ jobs:
             LLVM=1 \
             olddefconfig
 
+          echo
+          echo "=========================================="
+          echo " CLEAN GENERATED SOURCE FILES"
+          echo "=========================================="
+
+          # This kernel tree requires the source tree itself to remain
+          # free of generated configuration files when using O=out.
+          # Some old Kbuild/Kconfig paths can recreate these directories
+          # during *config targets, so clean them immediately before
+          # prepare.
+
+          rm -f .config
+          rm -f .config.old
+          rm -f .version
+
+          rm -rf include/config
+          rm -rf include/generated
+          rm -rf arch/arm64/include/generated
+
+          echo "Source generated files cleaned."
+          echo
+          echo "Source tree status after olddefconfig cleanup:"
+          git status --short
+
+          if [ -f .config ]; then
+            echo "ERROR: source .config still exists."
+            exit 1
+          fi
+
+          if [ -d include/config ]; then
+            echo "ERROR: source include/config still exists."
+            exit 1
+          fi
+
+          echo "Source tree is clean for PREPARE."
+
+          echo
+          echo "=========================================="
+          echo " PREPARE"
+          echo "=========================================="
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 \
+            prepare
 
           echo
           echo "=========================================="
