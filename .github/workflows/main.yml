@@ -845,10 +845,11 @@ jobs:
             ${{ env.KERNEL_NAME }}.img
             kernel/out/arch/arm64/boot/Image.gz
             official/boot.img
-            release/README.txt
+            release/
           if-no-files-found: error
           retention-days: 30
 
+          
       # ============================================================
       # 17. GitHub Release
       # ============================================================
