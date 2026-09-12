@@ -21,12 +21,6 @@ env:
   ARCH: arm64
   SUBARCH: arm64
 
-  CROSS_COMPILE: ${{ github.workspace }}/kernel/toolchain/gcc/bin/aarch64-linux-android-
-  CROSS_COMPILE_ARM32: ${{ github.workspace }}/kernel/toolchain/gcc32/bin/arm-linux-androideabi-
-  CROSS_COMPILE_COMPAT: ${{ github.workspace }}/kernel/toolchain/gcc32/bin/arm-linux-androideabi-
-
-  CLANG_PATH: ${{ github.workspace }}/kernel/toolchain/clang/bin
-
   KERNEL_NAME: lineage-kernel-judyln
 
 jobs:
@@ -95,11 +89,10 @@ jobs:
             wget \
             unzip \
             zip \
-            jq \
             file
 
       # ============================================================
-      # 4. Setup original working Clang
+      # 4. Setup original working Clang 11
       # ============================================================
       - name: Setup Clang 11
         working-directory: kernel
@@ -116,7 +109,6 @@ jobs:
 
           echo "===== CLANG ====="
           toolchain/clang/bin/clang --version
-          ls -la toolchain/clang/bin | head -30
 
       # ============================================================
       # 5. Setup original working GCC 4.9
@@ -148,7 +140,194 @@ jobs:
           toolchain/gcc32/bin/arm-linux-androideabi-gcc --version
 
       # ============================================================
-      # 6. Apply cgroup patch
+      # 6. Download latest official LineageOS boot.img
+      #
+      # IMPORTANT:
+      # We do this BEFORE kernel compilation.
+      #
+      # The LineageOS API returns:
+      #
+      # builds[]
+      #   └── files[]
+      #         ├── filename
+      #         ├── url
+      #         ├── sha256
+      #         └── size
+      #
+      # We use the real URL returned by the API.
+      # No URL is constructed manually.
+      # ============================================================
+      - name: Download latest official LineageOS boot.img
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE="g710ulm"
+          API="https://download.lineageos.org/api/v2/devices/${DEVICE}/builds"
+
+          mkdir -p official
+
+          echo "=========================================="
+          echo " LineageOS official boot.img"
+          echo "=========================================="
+          echo
+
+          echo "[1/4] Fetch build list..."
+
+          curl -L \
+            --fail \
+            --retry 10 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 180 \
+            -A "GitHubActions-LineageOS-Kernel" \
+            "$API" \
+            -o official/lineage-builds.json
+
+          test -s official/lineage-builds.json
+
+          echo
+          echo "[2/4] Find newest build..."
+
+          python3 <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("official/lineage-builds.json")
+
+          with path.open("r", encoding="utf-8") as f:
+              builds = json.load(f)
+
+          if not builds:
+              print("ERROR: LineageOS API returned no builds.")
+              sys.exit(1)
+
+          # datetime is a Unix timestamp in the current API.
+          builds.sort(
+              key=lambda x: int(x.get("datetime", 0)),
+              reverse=True
+          )
+
+          latest = builds[0]
+
+          latest_date = latest.get("date", "")
+          latest_datetime = latest.get("datetime", 0)
+          latest_version = latest.get("version", "")
+          latest_type = latest.get("type", "")
+
+          print("Latest build:")
+          print("  date     :", latest_date)
+          print("  datetime :", latest_datetime)
+          print("  version  :", latest_version)
+          print("  type     :", latest_type)
+
+          boot = None
+
+          for item in latest.get("files", []):
+              if item.get("filename") == "boot.img":
+                  boot = item
+                  break
+
+          if boot is None:
+              print("ERROR: boot.img was not found in latest build.")
+              sys.exit(1)
+
+          filename = boot.get("filename", "")
+          url = boot.get("url", "")
+          sha256 = boot.get("sha256", "")
+          size = int(boot.get("size", 0))
+
+          if filename != "boot.img":
+              print("ERROR: unexpected boot filename:", filename)
+              sys.exit(1)
+
+          if not url:
+              print("ERROR: boot.img URL is empty.")
+              sys.exit(1)
+
+          if len(sha256) != 64:
+              print("ERROR: invalid SHA256 returned by API.")
+              sys.exit(1)
+
+          if size <= 0:
+              print("ERROR: invalid boot.img size.")
+              sys.exit(1)
+
+          print()
+          print("Official boot.img:")
+          print("  filename :", filename)
+          print("  url      :", url)
+          print("  sha256   :", sha256)
+          print("  size     :", size)
+
+          with open("official/boot.env", "w", encoding="utf-8") as f:
+              f.write(f"LINEAGE_DATE={latest_date}\n")
+              f.write(f"LINEAGE_DATETIME={latest_datetime}\n")
+              f.write(f"LINEAGE_VERSION={latest_version}\n")
+              f.write(f"LINEAGE_TYPE={latest_type}\n")
+              f.write(f"BOOT_URL={url}\n")
+              f.write(f"BOOT_SHA256={sha256}\n")
+              f.write(f"BOOT_SIZE={size}\n")
+              f.write(f"BOOT_FILENAME={filename}\n")
+          PY
+
+          cat official/boot.env >> "$GITHUB_ENV"
+
+          echo
+          echo "[3/4] Download boot.img..."
+
+          curl -L \
+            --fail \
+            --retry 10 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 600 \
+            -A "GitHubActions-LineageOS-Kernel" \
+            "$BOOT_URL" \
+            -o official/boot.img
+
+          test -s official/boot.img
+
+          echo
+          echo "[4/4] Verify boot.img..."
+
+          ACTUAL_SIZE=$(stat -c%s official/boot.img)
+
+          echo "Expected size: $BOOT_SIZE"
+          echo "Actual size  : $ACTUAL_SIZE"
+
+          if [ "$ACTUAL_SIZE" -ne "$BOOT_SIZE" ]; then
+            echo "ERROR: boot.img size mismatch."
+            exit 1
+          fi
+
+          ACTUAL_SHA256=$(sha256sum official/boot.img | awk '{print $1}')
+
+          echo
+          echo "Expected SHA256:"
+          echo "$BOOT_SHA256"
+
+          echo
+          echo "Actual SHA256:"
+          echo "$ACTUAL_SHA256"
+
+          if [ "$ACTUAL_SHA256" != "$BOOT_SHA256" ]; then
+            echo
+            echo "ERROR: boot.img SHA256 mismatch."
+            exit 1
+          fi
+
+          echo
+          echo "=========================================="
+          echo "Official boot.img verified successfully"
+          echo "=========================================="
+
+          ls -lh official/boot.img
+          file official/boot.img
+
+      # ============================================================
+      # 7. Apply cgroup patch
       # ============================================================
       - name: Apply cgroup patch
         working-directory: kernel
@@ -162,7 +341,7 @@ jobs:
           fi
 
       # ============================================================
-      # 7. VDSO32 dependency fix
+      # 8. VDSO32 dependency fix
       # ============================================================
       - name: Fix VDSO32 build dependency
         working-directory: kernel
@@ -177,10 +356,11 @@ jobs:
           original = text
 
           # ----------------------------------------------------------
-          # Make CROSS_COMPILE_COMPAT available to old arm64 Makefiles
+          # Add CROSS_COMPILE_COMPAT fallback
           # ----------------------------------------------------------
           if "CROSS_COMPILE_COMPAT" not in text:
               marker = "ifeq ($(KBUILD_EXTMOD),)"
+
               if marker in text:
                   text = text.replace(
                       marker,
@@ -190,7 +370,7 @@ jobs:
                   )
 
           # ----------------------------------------------------------
-          # Make vdso_prepare explicitly generate vdso32-offsets.h
+          # Make vdso_prepare generate vdso32-offsets.h
           # ----------------------------------------------------------
           target = "include/generated/vdso32-offsets.h"
 
@@ -221,7 +401,7 @@ jobs:
               path.write_text(text)
               print("VDSO32 dependency fix applied.")
 
-          print("===== arch/arm64/Makefile relevant lines =====")
+          print("===== VDSO32 relevant lines =====")
 
           for i, line in enumerate(text.splitlines(), 1):
               if (
@@ -234,12 +414,14 @@ jobs:
           PY
 
       # ============================================================
-      # 8. Build kernel
+      # 9. Build kernel
       # ============================================================
       - name: Build kernel
         working-directory: kernel
         shell: bash
         run: |
+          set -euo pipefail
+
           export PATH="$PWD/toolchain/clang/bin:$PWD/toolchain/gcc/bin:$PWD/toolchain/gcc32/bin:$PATH"
 
           export ARCH=arm64
@@ -251,10 +433,10 @@ jobs:
 
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
-
           export LLVM=1
 
           echo "===== TOOLCHAIN ====="
+
           which clang
           clang --version
 
@@ -262,6 +444,11 @@ jobs:
           echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
           echo "CROSS_COMPILE_COMPAT=$CROSS_COMPILE_COMPAT"
 
+          # ========================================================
+          # DEFCONFIG
+          # ========================================================
+
+          echo
           echo "===== DEFCONFIG ====="
 
           make O=out \
@@ -274,6 +461,11 @@ jobs:
             LLVM=1 \
             "$CONFIG_NAME"
 
+          # ========================================================
+          # Droidspaces config
+          # ========================================================
+
+          echo
           echo "===== MERGE DROIDSPACES CONFIG ====="
 
           if [ -f droidspaces.cfg ]; then
@@ -283,6 +475,11 @@ jobs:
               droidspaces.cfg
           fi
 
+          # ========================================================
+          # olddefconfig
+          # ========================================================
+
+          echo
           echo "===== OLDDEFCONFIG ====="
 
           make O=out \
@@ -295,6 +492,11 @@ jobs:
             LLVM=1 \
             olddefconfig
 
+          # ========================================================
+          # prepare
+          # ========================================================
+
+          echo
           echo "===== PREPARE ====="
 
           make O=out \
@@ -307,6 +509,11 @@ jobs:
             LLVM=1 \
             prepare
 
+          # ========================================================
+          # Verify VDSO
+          # ========================================================
+
+          echo
           echo "===== VERIFY VDSO ====="
 
           test -f out/include/generated/vdso-offsets.h
@@ -322,6 +529,11 @@ jobs:
             echo "CONFIG_COMPAT_VDSO is not enabled."
           fi
 
+          # ========================================================
+          # Build
+          # ========================================================
+
+          echo
           echo "===== BUILD IMAGE.GZ ====="
 
           make -j"$(nproc)" \
@@ -335,265 +547,119 @@ jobs:
             LLVM=1 \
             Image.gz
 
+          echo
           echo "===== KERNEL BUILD RESULT ====="
 
-          ls -lh out/arch/arm64/boot/Image.gz
+          test -s out/arch/arm64/boot/Image.gz
 
+          ls -lh out/arch/arm64/boot/Image.gz
           file out/arch/arm64/boot/Image.gz
 
       # ============================================================
-      # 9. Get latest official LineageOS build information
+      # 10. Download magiskboot
       # ============================================================
-      - name: Get latest official LineageOS build
+      - name: Prepare magiskboot
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          API_URL="https://download.lineageos.org/api/v2/devices/g710ulm/builds"
+          mkdir -p boot-tools
 
-          echo "Fetching:"
-          echo "$API_URL"
+          echo "Downloading latest Magisk package..."
 
           curl -L \
             --fail \
             --retry 5 \
-            --retry-delay 5 \
-            --connect-timeout 30 \
-            --max-time 120 \
-            -A "GitHubActions-LineageOS-Kernel" \
-            "$API_URL" \
-            -o lineage-builds.json
+            --retry-delay 3 \
+            https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk.apk \
+            -o boot-tools/Magisk.apk
 
-          echo "===== API RESPONSE ====="
+          echo "Extracting magiskboot..."
 
-          python3 - <<'PY'
-          import json
+          unzip -j \
+            boot-tools/Magisk.apk \
+            "lib/x86_64/libmagiskboot.so" \
+            -d boot-tools
 
-          with open("lineage-builds.json", "r") as f:
-              data = json.load(f)
+          mv \
+            boot-tools/libmagiskboot.so \
+            boot-tools/magiskboot
 
-          print("Number of builds:", len(data))
+          chmod +x boot-tools/magiskboot
 
-          if not data:
-              raise SystemExit("No LineageOS builds returned.")
+          echo
+          echo "===== MAGISKBOOT ====="
 
-          print(json.dumps(data[0], indent=2)[:5000])
-          PY
-
-          # ----------------------------------------------------------
-          # Pick the newest build.
-          #
-          # The LineageOS API provides builds in chronological order
-          # in normal operation, but sort explicitly by datetime.
-          # ----------------------------------------------------------
-          python3 <<'PY'
-          import json
-          from datetime import datetime
-
-          with open("lineage-builds.json", "r") as f:
-              builds = json.load(f)
-
-          if not builds:
-              raise SystemExit("No builds found.")
-
-          def get_date(build):
-              value = build.get("datetime", "")
-
-              try:
-                  return datetime.fromisoformat(
-                      value.replace("Z", "+00:00")
-                  )
-              except Exception:
-                  return datetime.min
-
-          builds.sort(
-              key=get_date,
-              reverse=True
-          )
-
-          latest = builds[0]
-
-          print("===== LATEST BUILD =====")
-          print(json.dumps(latest, indent=2))
-
-          filename = latest.get("filename")
-          datetime_value = latest.get("datetime")
-          version = latest.get("version")
-          url = latest.get("url")
-
-          if not filename:
-              raise SystemExit("Latest build has no filename.")
-
-          if not datetime_value:
-              raise SystemExit("Latest build has no datetime.")
-
-          print("")
-          print("LATEST_FILENAME=" + filename)
-          print("LATEST_DATETIME=" + datetime_value)
-          print("LATEST_VERSION=" + str(version))
-          print("LATEST_URL=" + str(url))
-
-          with open("lineage-latest.env", "w") as f:
-              f.write("LATEST_FILENAME=" + filename + "\n")
-              f.write("LATEST_DATETIME=" + datetime_value + "\n")
-              f.write("LATEST_VERSION=" + str(version or "") + "\n")
-              f.write("LATEST_URL=" + str(url or "") + "\n")
-          PY
-
-          cat lineage-latest.env >> "$GITHUB_ENV"
+          ls -lh boot-tools/magiskboot
 
       # ============================================================
-      # 10. Download official boot.img
+      # 11. Unpack official boot.img
       # ============================================================
-      - name: Download latest official boot.img
+      - name: Unpack official boot.img
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Official LineageOS build:"
-          echo "$LATEST_FILENAME"
-
-          echo "Build datetime:"
-          echo "$LATEST_DATETIME"
-
-          # ----------------------------------------------------------
-          # LineageOS mirror layout:
-          #
-          # mirrorbits.lineageos.org/full/<device>/<date>/
-          #
-          # Example:
-          # /full/g710ulm/20260815/boot.img
-          # ----------------------------------------------------------
-
-          BUILD_DATE="${LATEST_DATETIME:0:10}"
-          BUILD_DATE="${BUILD_DATE//-/}"
-
-          BOOT_URL="https://mirrorbits.lineageos.org/full/g710ulm/${BUILD_DATE}/boot.img"
-
-          echo "BOOT_URL=$BOOT_URL"
-
-          mkdir -p official
-
-          curl -L \
-            --fail \
-            --retry 10 \
-            --retry-delay 5 \
-            --connect-timeout 30 \
-            --max-time 600 \
-            -A "GitHubActions-LineageOS-Kernel" \
-            "$BOOT_URL" \
-            -o official/boot.img
-
-          echo "===== DOWNLOADED BOOT ====="
-
-          ls -lh official/boot.img
-          file official/boot.img
-
-          # ----------------------------------------------------------
-          # Basic validation
-          # ----------------------------------------------------------
-
-          test -s official/boot.img
-
-          SIZE=$(stat -c%s official/boot.img)
-
-          echo "boot.img size: $SIZE bytes"
-
-          # G710ULM LineageOS boot image is expected to be tens of MB.
-          # Refuse obviously invalid HTML/error downloads.
-          if [ "$SIZE" -lt 1048576 ]; then
-            echo "ERROR: boot.img is suspiciously small."
-            exit 1
-          fi
-
-          echo "Official boot.img downloaded successfully."
-
-      # ============================================================
-      # 11. Extract official boot.img
-      # ============================================================
-      - name: Extract official boot.img
-        shell: bash
-        run: |
-          set -e
-
+          rm -rf boot-extracted
           mkdir -p boot-extracted
+
+          cp \
+            official/boot.img \
+            boot-extracted/official-boot.img
 
           cd boot-extracted
 
-          echo "===== CHECK FOR MAGISKBOOT ====="
+          echo "===== UNPACK BOOT ====="
 
-          if command -v magiskboot >/dev/null 2>&1; then
-            echo "magiskboot already available."
-          else
-            echo "Downloading magiskboot..."
+          ../boot-tools/magiskboot \
+            unpack \
+            official-boot.img
 
-            curl -L \
-              --fail \
-              --retry 5 \
-              https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk.zip \
-              -o Magisk.zip
-
-            unzip -j \
-              Magisk.zip \
-              "lib/x86_64/libmagiskboot.so" \
-              -d .
-
-            mv libmagiskboot.so magiskboot
-            chmod +x magiskboot
-          fi
-
-          echo "===== UNPACK BOOT IMAGE ====="
-
-          ../boot-extracted/magiskboot unpack ../official/boot.img
-
+          echo
           echo "===== EXTRACTED FILES ====="
 
-          find . -maxdepth 2 -type f -printf "%p %s bytes\n" | sort
+          find . \
+            -maxdepth 2 \
+            -type f \
+            -printf "%p %s bytes\n" \
+            | sort
+
+          if [ ! -f kernel ]; then
+            echo
+            echo "ERROR: magiskboot did not extract a kernel file."
+            exit 1
+          fi
+
+          echo
+          echo "Original kernel:"
+          ls -lh kernel
+          file kernel
 
       # ============================================================
-      # 12. Replace kernel Image.gz
+      # 12. Replace kernel with newly compiled Image.gz
       # ============================================================
-      - name: Replace Image.gz in official boot.img
+      - name: Replace boot kernel with Image.gz
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "===== KERNEL ====="
-
-          ls -lh kernel/out/arch/arm64/boot/Image.gz
+          echo "===== NEW KERNEL ====="
 
           test -s kernel/out/arch/arm64/boot/Image.gz
 
-          echo "===== BOOT CONTENTS ====="
+          ls -lh kernel/out/arch/arm64/boot/Image.gz
+          file kernel/out/arch/arm64/boot/Image.gz
 
-          ls -lah boot-extracted
-
-          # ----------------------------------------------------------
-          # magiskboot normally extracts the kernel as:
-          #
-          # kernel
-          #
-          # For this device the kernel is the compressed Image.gz.
-          # We replace it with our freshly compiled kernel.
-          # ----------------------------------------------------------
-
-          if [ ! -f boot-extracted/kernel ]; then
-            echo "ERROR: unpacked boot.img does not contain 'kernel'."
-
-            echo "===== DIRECTORY ====="
-            find boot-extracted -maxdepth 2 -type f -ls
-
-            exit 1
-          fi
+          echo
+          echo "===== REPLACE ====="
 
           cp \
             kernel/out/arch/arm64/boot/Image.gz \
             boot-extracted/kernel
 
-          echo "===== NEW KERNEL ====="
-
+          echo
+          echo "New boot kernel:"
           ls -lh boot-extracted/kernel
-
           file boot-extracted/kernel
 
       # ============================================================
@@ -602,17 +668,15 @@ jobs:
       - name: Repack boot.img
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cd boot-extracted
 
           echo "===== REPACK ====="
 
-          ./magiskboot repack ../official/boot.img
-
-          echo "===== REPACK RESULT ====="
-
-          ls -lah
+          ../boot-tools/magiskboot \
+            repack \
+            official-boot.img
 
           if [ ! -f new-boot.img ]; then
             echo "ERROR: new-boot.img was not created."
@@ -621,11 +685,17 @@ jobs:
 
           test -s new-boot.img
 
-          ls -lh new-boot.img
+          mv \
+            new-boot.img \
+            ../${KERNEL_NAME}.img
 
-          file new-boot.img
+          cd ..
 
-          mv new-boot.img ../${KERNEL_NAME}.img
+          echo
+          echo "===== FINAL BOOT IMAGE ====="
+
+          ls -lh "${KERNEL_NAME}.img"
+          file "${KERNEL_NAME}.img"
 
       # ============================================================
       # 14. Validate final boot.img
@@ -633,36 +703,32 @@ jobs:
       - name: Validate final boot.img
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "===== FINAL BOOT IMAGE ====="
-
-          ls -lh "${KERNEL_NAME}.img"
-
-          file "${KERNEL_NAME}.img"
+          test -s "${KERNEL_NAME}.img"
 
           SIZE=$(stat -c%s "${KERNEL_NAME}.img")
 
-          echo "Final boot.img size: $SIZE bytes"
+          echo "Final boot.img:"
+          ls -lh "${KERNEL_NAME}.img"
 
-          if [ "$SIZE" -lt 1048576 ]; then
-            echo "ERROR: final boot.img is suspiciously small."
-            exit 1
-          fi
+          echo
+          echo "Size:"
+          echo "$SIZE bytes"
 
+          echo
+          echo "SHA256:"
           sha256sum "${KERNEL_NAME}.img"
 
-          echo ""
-          echo "===== OFFICIAL BUILD ====="
-          echo "$LATEST_FILENAME"
+          echo
+          echo "===== OFFICIAL BASE ====="
 
-          echo ""
-          echo "===== BUILD DATE ====="
-          echo "$LATEST_DATETIME"
-
-          echo ""
-          echo "===== FINAL IMAGE ====="
-          echo "${KERNEL_NAME}.img"
+          echo "LineageOS version : $LINEAGE_VERSION"
+          echo "LineageOS date    : $LINEAGE_DATE"
+          echo "LineageOS build   : $LINEAGE_TYPE"
+          echo "Official boot URL : $BOOT_URL"
+          echo "Official boot SHA : $BOOT_SHA256"
+          echo "Official boot size: $BOOT_SIZE"
 
       # ============================================================
       # 15. Create release package
@@ -670,64 +736,79 @@ jobs:
       - name: Create release package
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
+          rm -rf release
           mkdir -p release
 
+          # Final modified boot image
           cp \
             "${KERNEL_NAME}.img" \
             release/boot.img
 
+          # Newly compiled kernel
           cp \
             kernel/out/arch/arm64/boot/Image.gz \
             release/Image.gz
 
+          # Original official boot image
           cp \
             official/boot.img \
             release/official-boot.img
 
+          # Build API response
           cp \
-            lineage-builds.json \
+            official/lineage-builds.json \
             release/lineage-builds.json
 
           cat > release/README.txt <<EOF
-          Kernel build for LG G7 ThinQ G710ULM/VMX
+Kernel build for LG G7 ThinQ G710ULM / judyln
 
-          Kernel repository:
-          https://github.com/coldraintea/android_kernel_lge_sdm845
+Kernel repository:
+https://github.com/coldraintea/android_kernel_lge_sdm845
 
-          Kernel branch:
-          ${KERNEL_BRANCH}
+Kernel branch:
+${KERNEL_BRANCH}
 
-          Defconfig:
-          ${CONFIG_NAME}
+Defconfig:
+${CONFIG_NAME}
 
-          Official LineageOS base:
-          ${LATEST_FILENAME}
+LineageOS version:
+${LINEAGE_VERSION}
 
-          Official LineageOS build date:
-          ${LATEST_DATETIME}
+LineageOS build date:
+${LINEAGE_DATE}
 
-          Official LineageOS build:
-          ${LATEST_URL}
+Official LineageOS boot.img:
+${BOOT_URL}
 
-          Files:
+Official boot.img SHA256:
+${BOOT_SHA256}
 
-          boot.img
-            Repacked official LineageOS boot.img with newly compiled Image.gz.
+Official boot.img size:
+${BOOT_SIZE}
 
-          Image.gz
-            Newly compiled kernel.
+Files:
 
-          official-boot.img
-            Original official LineageOS boot.img used as the packaging base.
+boot.img
+  Repacked official LineageOS boot.img
+  with the newly compiled Image.gz.
 
-          WARNING:
-          This image is provided for testing purposes.
-          Flash at your own risk.
-          EOF
+Image.gz
+  Newly compiled kernel.
 
-          echo "===== RELEASE CONTENT ====="
+official-boot.img
+  Original official LineageOS boot.img.
+
+lineage-builds.json
+  Official LineageOS build API response.
+
+WARNING:
+This kernel is for testing.
+Flash at your own risk.
+EOF
+
+          echo "===== RELEASE FILES ====="
 
           ls -lah release
 
@@ -738,14 +819,18 @@ jobs:
             boot.img \
             Image.gz \
             official-boot.img \
+            lineage-builds.json \
             README.txt
 
           cd ..
 
+          echo
           echo "===== PACKAGE ====="
 
           ls -lh "${KERNEL_NAME}.zip"
 
+          echo
+          echo "SHA256:"
           sha256sum \
             "${KERNEL_NAME}.zip" \
             "${KERNEL_NAME}.img"
@@ -767,7 +852,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 17. Create GitHub Release
+      # 17. GitHub Release
       # ============================================================
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -775,9 +860,14 @@ jobs:
           tag_name: ${{ env.KERNEL_NAME }}-${{ github.run_number }}
           name: "${{ env.KERNEL_NAME }} build #${{ github.run_number }}"
           body: |
-            ## LG G7 ThinQ G710ULM/VMX Kernel
+            ## LG G7 ThinQ G710ULM / judyln Kernel
 
-            Kernel branch:
+            ### Kernel
+
+            Repository:
+            `coldraintea/android_kernel_lge_sdm845`
+
+            Branch:
             `${{ env.KERNEL_BRANCH }}`
 
             Defconfig:
@@ -785,33 +875,45 @@ jobs:
 
             ### Official LineageOS base
 
-            `${{ env.LATEST_FILENAME }}`
+            Version:
+            `${{ env.LINEAGE_VERSION }}`
 
             Build date:
+            `${{ env.LINEAGE_DATE }}`
 
-            `${{ env.LATEST_DATETIME }}`
+            Official boot.img:
+            `${{ env.BOOT_URL }}`
 
-            The official LineageOS boot.img was downloaded automatically
-            and used as the packaging base.
+            Official boot.img SHA256:
+            `${{ env.BOOT_SHA256 }}`
 
-            The newly compiled `Image.gz` was inserted into that boot.img.
+            Official boot.img size:
+            `${{ env.BOOT_SIZE }}` bytes
 
-            ### Files
+            ### Packaging
 
-            - `${{ env.KERNEL_NAME }}.zip`
+            The official LineageOS boot.img was downloaded and
+            SHA256-verified BEFORE kernel compilation.
+
+            The newly compiled `Image.gz` was then inserted into
+            the verified official boot.img and repacked.
+
+            ### Release files
+
             - `${{ env.KERNEL_NAME }}.img`
-
-            The `.img` file is the final repacked boot image.
+            - `${{ env.KERNEL_NAME }}.zip`
 
             The ZIP also contains:
+
             - `boot.img`
             - `Image.gz`
             - `official-boot.img`
-            - build information
+            - `lineage-builds.json`
+            - `README.txt`
 
             ### Warning
 
-            Test/experimental kernel.
+            Experimental/test kernel.
             Flash at your own risk.
           files: |
             ${{ env.KERNEL_NAME }}.zip
