@@ -553,10 +553,8 @@ jobs:
             exit 1
           fi
 
-          ./scripts/kconfig/merge_config.sh \
-            -m \
-            out/.config \
-            droidspaces.cfg
+
+          KCONFIG_CONFIG="$PWD/out/.config" scripts/kconfig/merge_config.sh -m out/.config droidspaces.cfg
 
           # ----------------------------------------------------------
           # Show requested Droidspaces configuration
