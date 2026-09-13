@@ -1,5 +1,6 @@
 name: Build Kernel for judyln with Droidspaces
-
+permissions:
+  contents: write
 on:
   workflow_dispatch:
     inputs:
@@ -516,12 +517,10 @@ jobs:
 
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
+
           export LLVM=1
 
-          echo "=========================================="
-          echo " TOOLCHAIN"
-          echo "=========================================="
-
+          echo "===== TOOLCHAIN ====="
           which clang
           clang --version
 
@@ -529,25 +528,10 @@ jobs:
           echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
           echo "CROSS_COMPILE_COMPAT=$CROSS_COMPILE_COMPAT"
 
-          echo
-          echo "=========================================="
-          echo " SOURCE TREE CHECK"
-          echo "=========================================="
-
-          if [ -f .config ]; then
-            echo "ERROR: source .config exists."
-            exit 1
-          fi
-
-          if [ -d include/config ]; then
-            echo "ERROR: source include/config exists."
-            exit 1
-          fi
-
-          echo
-          echo "=========================================="
-          echo " DEFCONFIG"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # DEFCONFIG
+          # ----------------------------------------------------------
+          echo "===== DEFCONFIG ====="
 
           make O=out \
             ARCH=arm64 \
@@ -559,26 +543,36 @@ jobs:
             LLVM=1 \
             "$CONFIG_NAME"
 
-          echo
-          echo "=========================================="
-          echo " MERGE DROIDSPACES CONFIG"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # Droidspaces configuration
+          # ----------------------------------------------------------
+          echo "===== MERGE DROIDSPACES CONFIG ====="
 
-          if [ -f droidspaces.cfg ]; then
-
-            ./scripts/kconfig/merge_config.sh \
-              -m \
-              out/.config \
-              droidspaces.cfg
-
-          else
-            echo "droidspaces.cfg not found."
+          if [ ! -f droidspaces.cfg ]; then
+            echo "ERROR: droidspaces.cfg not found."
+            exit 1
           fi
 
-          echo
-          echo "=========================================="
-          echo " OLDDEFCONFIG"
-          echo "=========================================="
+          ./scripts/kconfig/merge_config.sh \
+            -m \
+            out/.config \
+            droidspaces.cfg
+
+          # ----------------------------------------------------------
+          # Show requested Droidspaces configuration
+          # ----------------------------------------------------------
+          echo "===== DROIDSPACES REQUESTED CONFIG ====="
+
+          grep -E '^CONFIG_(MULTIUSER|NAMESPACES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|POSIX_MQUEUE|NET|NET_NS|VETH|BRIDGE|INET|NETFILTER|BRIDGE_NETFILTER|NETFILTER_ADVANCED|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|DEVTMPFS|SECCOMP|SECCOMP_FILTER|OVERLAY_FS)=' \
+            droidspaces.cfg || true
+
+          # ----------------------------------------------------------
+          # OLDDEFCONFIG
+          #
+          # Kconfig dependency resolution happens here.
+          # Therefore the final .config must be checked AFTER this step.
+          # ----------------------------------------------------------
+          echo "===== OLDDEFCONFIG ====="
 
           make O=out \
             ARCH=arm64 \
@@ -590,46 +584,97 @@ jobs:
             LLVM=1 \
             olddefconfig
 
-          echo
-          echo "=========================================="
-          echo " CLEAN GENERATED SOURCE FILES"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # FINAL CONFIG CHECK
+          # ----------------------------------------------------------
+          echo "===== FINAL DROIDSPACES CONFIG ====="
 
-          # This kernel tree requires the source tree itself to remain
-          # free of generated configuration files when using O=out.
-          # Some old Kbuild/Kconfig paths can recreate these directories
-          # during *config targets, so clean them immediately before
-          # prepare.
+          grep -E '^CONFIG_(MULTIUSER|NAMESPACES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|POSIX_MQUEUE|NET|NET_NS|VETH|BRIDGE|INET|NETFILTER|BRIDGE_NETFILTER|NETFILTER_ADVANCED|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|DEVTMPFS|SECCOMP|SECCOMP_FILTER|OVERLAY_FS)=' \
+            out/.config || true
 
-          rm -f .config
-          rm -f .config.old
-          rm -f .version
+          echo "===== VERIFY REQUIRED DROIDSPACES OPTIONS ====="
 
-          rm -rf include/config
-          rm -rf include/generated
-          rm -rf arch/arm64/include/generated
+          required=(
+            CONFIG_MULTIUSER
+            CONFIG_NAMESPACES
+            CONFIG_PID_NS
+            CONFIG_UTS_NS
+            CONFIG_IPC_NS
+            CONFIG_USER_NS
 
-          echo "Source generated files cleaned."
-          echo
-          echo "Source tree status after olddefconfig cleanup:"
-          git status --short
+            CONFIG_SYSVIPC
+            CONFIG_POSIX_MQUEUE
 
-          if [ -f .config ]; then
-            echo "ERROR: source .config still exists."
+            CONFIG_NET
+            CONFIG_NET_NS
+            CONFIG_VETH
+            CONFIG_BRIDGE
+            CONFIG_INET
+
+            CONFIG_NETFILTER
+            CONFIG_NETFILTER_ADVANCED
+            CONFIG_BRIDGE_NETFILTER
+
+            CONFIG_CGROUPS
+            CONFIG_CGROUP_DEVICE
+            CONFIG_CGROUP_PIDS
+
+            CONFIG_DEVTMPFS
+
+            CONFIG_SECCOMP
+            CONFIG_SECCOMP_FILTER
+
+            CONFIG_OVERLAY_FS
+          )
+
+          failed=0
+
+          for cfg in "${required[@]}"; do
+            if grep -q "^${cfg}=y$" out/.config; then
+              echo "[OK]   ${cfg}=y"
+            else
+              echo "[FAIL] ${cfg} is NOT enabled in final out/.config"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo ""
+            echo "============================================================"
+            echo "ERROR: Final kernel configuration does NOT satisfy"
+            echo "       the required Droidspaces configuration."
+            echo "============================================================"
+            echo ""
+            echo "The configuration was rejected AFTER olddefconfig."
+            echo "This means one or more Kconfig dependencies prevented"
+            echo "Droidspaces options from remaining enabled."
+            echo ""
+
+            echo "===== FINAL VALUES ====="
+            for cfg in "${required[@]}"; do
+              value=$(grep -E "^${cfg}=" out/.config || true)
+
+              if [ -z "$value" ]; then
+                if grep -q "^# ${cfg} is not set$" out/.config; then
+                  value="# ${cfg} is not set"
+                else
+                  value="<missing>"
+                fi
+              fi
+
+              echo "$value"
+            done
+
             exit 1
           fi
 
-          if [ -d include/config ]; then
-            echo "ERROR: source include/config still exists."
-            exit 1
-          fi
+          echo ""
+          echo "All required Droidspaces kernel options are enabled."
 
-          echo "Source tree is clean for PREPARE."
-
-          echo
-          echo "=========================================="
-          echo " PREPARE"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # PREPARE
+          # ----------------------------------------------------------
+          echo "===== PREPARE ====="
 
           make O=out \
             ARCH=arm64 \
@@ -641,47 +686,28 @@ jobs:
             LLVM=1 \
             prepare
 
-          echo
-          echo "=========================================="
-          echo " PREPARE"
-          echo "=========================================="
-
-          make O=out \
-            ARCH=arm64 \
-            CROSS_COMPILE="$CROSS_COMPILE" \
-            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            LLVM=1 \
-            prepare
-
-          echo
-          echo "=========================================="
-          echo " VERIFY VDSO"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # VERIFY VDSO
+          # ----------------------------------------------------------
+          echo "===== VERIFY VDSO ====="
 
           test -f out/include/generated/vdso-offsets.h
 
           if grep -q '^CONFIG_COMPAT_VDSO=y' out/.config; then
-
             echo "CONFIG_COMPAT_VDSO=y"
 
             test -f \
               out/include/generated/vdso32-offsets.h
 
             echo "vdso32-offsets.h exists."
-
           else
-
             echo "CONFIG_COMPAT_VDSO is not enabled."
-
           fi
 
-          echo
-          echo "=========================================="
-          echo " BUILD IMAGE.GZ"
-          echo "=========================================="
+          # ----------------------------------------------------------
+          # BUILD IMAGE.GZ
+          # ----------------------------------------------------------
+          echo "===== BUILD IMAGE.GZ ====="
 
           make -j"$(nproc)" \
             O=out \
@@ -694,18 +720,10 @@ jobs:
             LLVM=1 \
             Image.gz
 
-          echo
-          echo "=========================================="
-          echo " KERNEL BUILD RESULT"
-          echo "=========================================="
+          echo "===== KERNEL BUILD RESULT ====="
 
-          test -s out/arch/arm64/boot/Image.gz
-
-          ls -lh \
-            out/arch/arm64/boot/Image.gz
-
-          file \
-            out/arch/arm64/boot/Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz
+          file out/arch/arm64/boot/Image.gz
 
 
       
